@@ -21,7 +21,6 @@ Janos is a K8s migration tool that update your manifests in order to be compatib
 - [Installation](#installation)
 - [Usage](#usage)
 - [List of Changes](#list-of-changes)
-- [About SumUp](#about-sumup)
 
 ## Overview
 Janos will convert all your manifest files, updating it inplace. If you pass a directory as a parameter, it will do a recursive search. All comments are removed, and the file formatting may change.
