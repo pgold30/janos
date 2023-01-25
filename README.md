@@ -55,14 +55,4 @@ All the rules are in the file migration.js.
   - 1.19: for Kind: HorizontalPodAutoscaler. Replace: autoscaling/v2beta1 with autoscaling/v2beta2
 
 ### Maintainers
-
-- [Denis Policastro](mailto:denis.policastro@sumup.com)
 - [Pablo Loschi](mailto:pablo.loschi@sumup.com)
-
-## About SumUp
-
-![SumUp logo](https://raw.githubusercontent.com/sumup-oss/assets/master/sumup-logo.svg?sanitize=true)
-
-[SumUp](https://sumup.com) is a mobile-point of sale provider. It is our mission to make easy and fast card payments a reality across the *entire* world. You can pay with SumUp in more than 30 countries, already. Our engineers work in Berlin, Cologne, Sofia, and Sāo Paulo. They write code in JavaScript, Swift, Ruby, Go, Java, Erlang, Elixir, and more.
-
-Want to come work with us? [Head to our careers page](https://sumup.com/careers) to find out more.
