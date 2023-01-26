@@ -47,7 +47,7 @@ janos {-d|-f}
 All the rules are in the file migration.js.
 
 ## List of Changes
-  - 1.16: for Kind: Deployment |Daemonset |Statefulset |ReplicaSet Replace for extensions/v1beta1 | apps/v1beta1 | apps/v1beta2 with apps/v1
+  - 1.16: for Kind: Deployment |Daemonset |Statefulset |ReplicaSet Replace: extensions/v1beta1 | apps/v1beta1 | apps/v1beta2 with apps/v1
   - 1.16: for Kind: Ingress. Replace: extensions/v1beta1 with networking.k8s.io/v1beta1
   - 1.16: for Kind: PodSecurityPolicy. Replace: extensions/v1beta1 |apps/v1beta2 with policy/v1beta1
   - 1.16: Generates the now required spec.selector for Kind Deployment |Daemonset |Statefulset |ReplicaSet (using matchLabels app name, you can read more about these here), only if it doesn't exist
