@@ -21,6 +21,7 @@ Janos is a K8s migration tool that update your manifests in order to be compatib
 - [Installation](#installation)
 - [Usage](#usage)
 - [List of Changes](#list-of-changes)
+- [More Info](#more-info)
 
 ## Overview
 Janos will convert all your manifest files, updating it inplace. If you pass a directory as a parameter, it will do a recursive search. All comments are removed, and the file formatting may change.
@@ -61,8 +62,8 @@ All the rules are in the file migration.js.
   - 1.21: for PriorityClasss: Replace scheduling.k8s.io/v1beta1 with scheduling.k8s.io/v1
   - 1.21: for CSIDriver, CSINode and StorageClass: Replace VolumeAttachmentstorage.k8s.io/v1beta1 with storage.k8s.io/v1
 
-## All changes and api deprecations were gathered from this stories
-There is more information about other changes here :). Thanks @martin (https://marcincuber.medium.com/)
+## More Info
+There is more information about other changes here :). Thanks https://marcincuber.medium.com/
 
 * [1.16 to 1.17](https://marcincuber.medium.com/amazon-eks-upgrade-journey-from-1-16-to-1-17-cb9e88191165)
 * [1.17 to 1.18](https://marcincuber.medium.com/amazon-eks-upgrade-journey-from-1-17-to-1-18-e35e134ca898)
