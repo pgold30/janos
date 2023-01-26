@@ -57,21 +57,21 @@ All the rules are in the file migration.js.
   - 1.21: for CertificateSigningRequest: Replace certificates.k8s.io/v1beta1 with certificates.k8s.io/v1
   - 1.21: for Lease: Replace coordination.k8s.io/v1beta1 with coordination.k8s.io/v1
   - 1.21: for Ingress: Replace extensions/v1beta1 |networking.k8s.io/v1beta1 with networking.k8s.io/v1
-  - 1.21: for RBAC: Repplace rbac.authorization.k8s.io/v1beta1 with rbac.authorization.k8s.io/v1
+  - 1.21: for RBAC: Replace rbac.authorization.k8s.io/v1beta1 with rbac.authorization.k8s.io/v1
   - 1.21: for PriorityClasss: Replace scheduling.k8s.io/v1beta1 with scheduling.k8s.io/v1
   - 1.21: for CSIDriver, CSINode and StorageClass: Replace VolumeAttachmentstorage.k8s.io/v1beta1 with storage.k8s.io/v1
 
 ## All changes and api deprecations were gathered from this stories
 There is more information about other changes here :). Thanks @martin (https://marcincuber.medium.com/)
 
-* [1.16 to 1.17](https://marcincuber.medium.com/amazon-eks-upgrade-journey-from-1-16-to-1-17-cb9e88191165)]
-* [1.17 to 1.18](https://marcincuber.medium.com/amazon-eks-upgrade-journey-from-1-17-to-1-18-e35e134ca898)]
-* [1.18 to 1.19](https://marcincuber.medium.com/amazon-eks-upgrade-journey-from-1-18-to-1-19-cca82de84333)]
-* [1.19 to 1.20](https://marcincuber.medium.com/amazon-eks-upgrade-journey-from-1-19-to-1-20-78c9a7edddb5)]
-* [1.20 to 1.21](https://marcincuber.medium.com/amazon-eks-upgrade-journey-from-1-20-to-1-21-caf1475deaa4)]
-* [1.21 to 1.22](https://marcincuber.medium.com/amazon-eks-upgrade-journey-from-1-21-to-1-22-9546da932af6)]
-* [1.22 to 1.23](https://marcincuber.medium.com/amazon-eks-upgrade-journey-from-1-22-to-1-23-3b9eaa8c57de)]
-* [1.23 to 1.24](https://marcincuber.medium.com/amazon-eks-upgrade-journey-from-1-23-to-1-24-b7b0b1afa5b4)]
+* [1.16 to 1.17](https://marcincuber.medium.com/amazon-eks-upgrade-journey-from-1-16-to-1-17-cb9e88191165)
+* [1.17 to 1.18](https://marcincuber.medium.com/amazon-eks-upgrade-journey-from-1-17-to-1-18-e35e134ca898)
+* [1.18 to 1.19](https://marcincuber.medium.com/amazon-eks-upgrade-journey-from-1-18-to-1-19-cca82de84333)
+* [1.19 to 1.20](https://marcincuber.medium.com/amazon-eks-upgrade-journey-from-1-19-to-1-20-78c9a7edddb5)
+* [1.20 to 1.21](https://marcincuber.medium.com/amazon-eks-upgrade-journey-from-1-20-to-1-21-caf1475deaa4)
+* [1.21 to 1.22](https://marcincuber.medium.com/amazon-eks-upgrade-journey-from-1-21-to-1-22-9546da932af6)
+* [1.22 to 1.23](https://marcincuber.medium.com/amazon-eks-upgrade-journey-from-1-22-to-1-23-3b9eaa8c57de)
+* [1.23 to 1.24](https://marcincuber.medium.com/amazon-eks-upgrade-journey-from-1-23-to-1-24-b7b0b1afa5b4)
 
 ### Maintainers
 - [Pablo Loschi](mailto:loschi.pablo@gmail.com)

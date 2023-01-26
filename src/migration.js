@@ -54,14 +54,44 @@ function replaceDeprecatedAPIs(resource) {
       break;
 
     case 'Ingress':
-      legacyAPIs = ['extensions/v1beta1'];
+      legacyAPIs = ['extensions/v1beta1', 'networking.k8s.io/v1beta1 '];
       if (legacyAPIs.includes(result.apiVersion)) {
         console.log(
           `Replace apiVersion for "${resource.kind}" - "${resource.metadata.name}"`,
         );
-        result.apiVersion = 'networking.k8s.io/v1beta1';
+        result.apiVersion = 'networking.k8s.io/v1';
       }
       break;
+
+    case 'CertificateSigningRequest':
+      legacyAPIs = ['certificates.k8s.io/v1beta1'];
+      if (legacyAPIs.includes(result.apiVersion)) {
+        console.log(
+          `Replace apiVersion for "${resource.kind}" - "${resource.metadata.name}"`,
+        );
+        result.apiVersion = 'certificates.k8s.io/v1';
+      }
+    break;  
+
+    case 'PriorityClasss':
+      legacyAPIs = ['scheduling.k8s.io/v1beta1'];
+      if (legacyAPIs.includes(result.apiVersion)) {
+        console.log(
+          `Replace apiVersion for "${resource.kind}" - "${resource.metadata.name}"`,
+        );
+        result.apiVersion = 'scheduling.k8s.io/v1';
+      }
+    break;
+
+    case 'Lease':
+      legacyAPIs = ['coordination.k8s.io/v1beta1'];
+      if (legacyAPIs.includes(result.apiVersion)) {
+        console.log(
+          `Replace apiVersion for "${resource.kind}" - "${resource.metadata.name}"`,
+        );
+        result.apiVersion = 'coordination.k8s.io/v1';
+      }
+    break;    
 
     case 'Role':
     case 'RoleBinding':
@@ -78,6 +108,42 @@ function replaceDeprecatedAPIs(resource) {
         result.apiVersion = 'rbac.authorization.k8s.io/v1';
       }
       break;
+
+      case 'CustomResourceDefinition':
+      case 'TokenReview':
+      case 'SubjectAccessReview':
+      case 'LocalSubjectAccessReview':
+        legacyAPIs = ['apiextensions.k8s.io/v1beta1'];
+        if (legacyAPIs.includes(result.apiVersion)) {
+          console.log(
+            `Replace apiVersion for "${resource.kind}" - "${resource.metadata.name}"`,
+          );
+          result.apiVersion = 'apiextensions.k8s.io/v1';
+        }
+ 
+      case 'ValidatingWebhookConfiguration':
+      case 'MutatingWebhookConfiguration':
+        legacyAPIs = ['admissionregistration.k8s.io/v1beta1'];
+        if (legacyAPIs.includes(result.apiVersion)) {
+          console.log(
+            `Replace apiVersion for "${resource.kind}" - "${resource.metadata.name}"`,
+          );
+          result.apiVersion = 'admissionregistration.k8s.io/v1';
+        }
+        
+      case 'CSIDriver':
+      case 'CSINode':
+      case 'StorageClass':
+        legacyAPIs = ['VolumeAttachmentstorage.k8s.io/v1beta1'];
+        if (legacyAPIs.includes(result.apiVersion)) {
+          console.log(
+            `Replace apiVersion for "${resource.kind}" - "${resource.metadata.name}"`,
+          );
+          result.apiVersion = 'storage.k8s.io/v1';
+        }
+
+      break;
+                
     default:
   }
 
