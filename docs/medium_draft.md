@@ -1,6 +1,6 @@
-# Stop Letting Kubernetes Upgrades Break Your GitOps Repos: Introducing Janos 2.0
+# Stop Letting Kubernetes Upgrades Break Your GitOps Repos: Introducing Janos 2.1
 
-> **Subtitle:** *Why `kubectl-convert` ruins your YAML comments, how we automated deprecations up to Kubernetes 1.32, and an effortless bridge to the Gateway API.*
+> **Subtitle:** *Why `kubectl-convert` ruins your YAML comments, how we automated deprecations up to Kubernetes 1.32, seamless Helm & Kustomize integration, and an effortless bridge to the Gateway API.*
 > **Author:** Pablo Loschi  
 > **Tags:** Kubernetes, DevOps, GitOps, Platform Engineering, SRE, Cloud Native  
 > **Reading Time:** ~6 min  
@@ -170,7 +170,31 @@ You can post this Markdown directly as a pull request comment in GitHub Actions 
 
 ---
 
-### 5. 🔎 Safe Preview with Colored Unified Diffs
+### 5. ⎈ First-Class Helm & Unix Pipeline Integration
+
+One of the biggest hurdles in Kubernetes GitOps is that teams don't only write raw manifests — they package everything into **Helm charts** and **Kustomize overlays**.
+
+Most tools either refuse to parse Go templates (`{{ .Values... }}`) or can only run against a live cluster. Janos 2.1 solves this in three ways:
+
+1. **Direct Chart Rendering (`--chart`)**:
+   ```sh
+   npx janos --chart ./charts/my-app --audit
+   npx janos --chart ./charts/my-app --values ./values-prod.yaml --audit --format markdown
+   ```
+   Janos invokes `helm template` under the hood, parses the rendered stream, and audits deprecations against your target Kubernetes version.
+
+2. **Template Migration Preserving Go Expressions**:
+   If you have raw template files with `{{ include ... }}` or `{{- if ... }}`, Janos safely detects and updates deprecated `apiVersion:` lines while preserving every single Go template tag byte-for-byte.
+
+3. **STDIN Streaming (`helm | janos -`)**:
+   ```sh
+   helm template my-release ./charts/my-app | npx janos - --audit --format markdown
+   kustomize build overlays/production | npx janos - --diff
+   ```
+
+---
+
+### 6. 🔎 Safe Preview with Colored Unified Diffs
 
 Never let an automated tool blindly overwrite production code. Janos provides an ANSI color-coded unified diff preview:
 
@@ -179,6 +203,23 @@ npx janos -d ./k8s-manifests --dry-run --diff
 ```
 
 You'll see green (`+`) and red (`-`) lines showing exactly what will change before a single file on disk is touched.
+
+---
+
+### 7. 🤖 Official GitHub Action & Pre-commit Hooks
+
+Want to ensure deprecated APIs never get committed in the first place? Janos provides an official GitHub Action and pre-commit hook:
+
+```yaml
+- name: Audit Kubernetes Manifests
+  uses: pgold30/janos@master
+  with:
+    path: './k8s'
+    args: '--audit --format markdown'
+    check: 'true'
+```
+
+It automatically adds PR line annotations in GitHub and posts the markdown summary to the Actions Job Summary!
 
 ---
 

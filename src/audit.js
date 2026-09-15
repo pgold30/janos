@@ -18,10 +18,81 @@ const path = require('path');
 const yaml = require('./yaml');
 const { normalizeKind, getRemovalVersion, MIGRATION_RULES } = require('./migration');
 
+const helm = require('./helm');
+
 function toJS(doc) {
   if (!doc) return doc;
   if (typeof doc.toJS === 'function') return doc.toJS();
   return doc;
+}
+
+/**
+ * Audits a string of YAML (or Helm template) content.
+ *
+ * @param {string} content
+ * @param {string} [sourceName]
+ * @param {Object} [options]
+ * @returns {{ documentsScanned: number, items: Array<Object> }}
+ */
+function auditContent(content, sourceName = 'STDIN', options = {}) {
+  const items = [];
+  let documentsScanned = 0;
+
+  if (helm.isHelmTemplate(content)) {
+    const templateItems = helm.auditHelmTemplate(content, sourceName);
+    return {
+      documentsScanned: templateItems.length > 0 ? templateItems.length : 1,
+      items: templateItems,
+    };
+  }
+
+  let docs;
+  try {
+    docs = yaml.parseDocuments(content);
+  } catch {
+    // If regular YAML parsing fails, try line-based Helm template audit as fallback
+    const fallbackItems = helm.auditHelmTemplate(content, sourceName);
+    return {
+      documentsScanned: fallbackItems.length > 0 ? fallbackItems.length : 1,
+      items: fallbackItems,
+    };
+  }
+
+  if (!docs || docs.length === 0) {
+    return { documentsScanned: 0, items: [] };
+  }
+
+  for (const docNode of docs) {
+    const doc = toJS(docNode);
+    if (!doc || typeof doc !== 'object') continue;
+    documentsScanned++;
+
+    const rawKind = doc.kind;
+    const rawApiVersion = doc.apiVersion;
+    if (!rawKind || !rawApiVersion) continue;
+
+    const kind = normalizeKind(rawKind);
+    const apiVersion = typeof rawApiVersion === 'string' ? rawApiVersion.trim() : rawApiVersion;
+    const name = (doc.metadata && doc.metadata.name) || 'unnamed';
+    const namespace = (doc.metadata && doc.metadata.namespace) || 'default';
+
+    const rule = MIGRATION_RULES[kind];
+    if (rule && rule.legacy.includes(apiVersion)) {
+      const removedIn = getRemovalVersion(kind, apiVersion);
+      items.push({
+        kind,
+        name,
+        namespace,
+        currentApi: apiVersion,
+        targetApi: rule.target,
+        removedIn: `v${removedIn}`,
+        file: sourceName,
+        warning: rule.warning || null,
+      });
+    }
+  }
+
+  return { documentsScanned, items };
 }
 
 /**
@@ -32,7 +103,7 @@ function toJS(doc) {
  * @returns {Object} Audit report containing scanned files, deprecated items, and summary.
  */
 function auditFiles(filePaths, options = {}) {
-  const items = [];
+  const allItems = [];
   let totalDocsScanned = 0;
 
   for (const filePath of filePaths) {
@@ -43,45 +114,17 @@ function auditFiles(filePaths, options = {}) {
       continue;
     }
 
-    const docs = yaml.parseDocuments(content);
-    if (!docs || docs.length === 0) continue;
-
-    for (const docNode of docs) {
-      const doc = toJS(docNode);
-      if (!doc || typeof doc !== 'object') continue;
-      totalDocsScanned++;
-
-      const rawKind = doc.kind;
-      const rawApiVersion = doc.apiVersion;
-      if (!rawKind || !rawApiVersion) continue;
-
-      const kind = normalizeKind(rawKind);
-      const apiVersion = typeof rawApiVersion === 'string' ? rawApiVersion.trim() : rawApiVersion;
-      const name = (doc.metadata && doc.metadata.name) || 'unnamed';
-      const namespace = (doc.metadata && doc.metadata.namespace) || 'default';
-
-      const rule = MIGRATION_RULES[kind];
-      if (rule && rule.legacy.includes(apiVersion)) {
-        const removedIn = getRemovalVersion(kind, apiVersion);
-        items.push({
-          kind,
-          name,
-          namespace,
-          currentApi: apiVersion,
-          targetApi: rule.target,
-          removedIn: `v${removedIn}`,
-          file: path.relative(process.cwd(), filePath) || filePath,
-          warning: rule.warning || null,
-        });
-      }
-    }
+    const relPath = path.relative(process.cwd(), filePath) || filePath;
+    const result = auditContent(content, relPath, options);
+    totalDocsScanned += result.documentsScanned;
+    allItems.push(...result.items);
   }
 
   return {
     filesScanned: filePaths.length,
     documentsScanned: totalDocsScanned,
-    deprecatedCount: items.length,
-    items,
+    deprecatedCount: allItems.length,
+    items: allItems,
   };
 }
 
@@ -159,6 +202,20 @@ function formatMarkdownTable(report) {
   return lines.join('\n');
 }
 
+function formatGitHubAnnotations(report) {
+  if (!report || !report.items || report.items.length === 0) {
+    return '';
+  }
+
+  return report.items
+    .map((item) => {
+      const title = encodeURIComponent ? `Deprecated Kubernetes API: ${item.kind}` : 'Deprecated Kubernetes API';
+      const msg = `${item.kind} "${item.name}" uses deprecated ${item.currentApi} (removed in ${item.removedIn}). Replace with ${item.targetApi}.`;
+      return `::warning file=${item.file},title=${title}::${msg}`;
+    })
+    .join('\n');
+}
+
 function formatReport(report, format = 'table') {
   switch (format.toLowerCase()) {
     case 'markdown':
@@ -166,6 +223,8 @@ function formatReport(report, format = 'table') {
       return formatMarkdownTable(report);
     case 'json':
       return JSON.stringify(report, null, 2);
+    case 'annotations':
+      return formatGitHubAnnotations(report);
     case 'table':
     default:
       return formatAsciiTable(report);
@@ -174,7 +233,9 @@ function formatReport(report, format = 'table') {
 
 module.exports = {
   auditFiles,
+  auditContent,
   formatReport,
   formatAsciiTable,
   formatMarkdownTable,
+  formatGitHubAnnotations,
 };

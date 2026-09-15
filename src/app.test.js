@@ -99,4 +99,41 @@ metadata:
 
     fs.unlinkSync(tmpFile);
   });
+
+  it('should respect .janosignore and custom ignore options', () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'janos-ignore-'));
+    fs.writeFileSync(path.join(tmpDir, '.janosignore'), 'ignored.yaml\n*.skip.yaml\n');
+    fs.writeFileSync(path.join(tmpDir, 'valid.yaml'), 'kind: Pod\n');
+    fs.writeFileSync(path.join(tmpDir, 'ignored.yaml'), 'kind: Pod\n');
+    fs.writeFileSync(path.join(tmpDir, 'test.skip.yaml'), 'kind: Pod\n');
+    fs.writeFileSync(path.join(tmpDir, 'manual.yaml'), 'kind: Pod\n');
+
+    const files = findYamlFiles(tmpDir, { ignore: 'manual.yaml' });
+    assert.equal(files.length, 1);
+    assert.ok(files[0].endsWith('valid.yaml'));
+
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  it('should convert Helm templates preserving Go templates via convertFile', () => {
+    const tmpFile = path.join(os.tmpdir(), `janos-helm-template-${Date.now()}.yaml`);
+    const templateContent = `{{- if .Values.enabled }}
+apiVersion: extensions/v1beta1
+kind: Deployment
+metadata:
+  name: {{ include "chart.name" . }}
+{{- end }}
+`;
+    fs.writeFileSync(tmpFile, templateContent);
+
+    const res = convertFile(tmpFile, { dryRun: false });
+    assert.equal(res.changed, true);
+
+    const updated = fs.readFileSync(tmpFile, 'utf8');
+    assert.match(updated, /apiVersion: apps\/v1/);
+    assert.match(updated, /\{\{- if \.Values\.enabled \}\}/);
+    assert.match(updated, /\{\{ include "chart\.name" \. \}\}/);
+
+    fs.unlinkSync(tmpFile);
+  });
 });

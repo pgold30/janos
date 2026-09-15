@@ -1,0 +1,68 @@
+name: 'Janos Kubernetes Manifest Migration & Audit'
+description: 'Automated Kubernetes manifest migration and deprecation audit for API version upgrades.'
+author: 'Pablo Loschi'
+branding:
+  icon: 'refresh-cw'
+  color: 'blue'
+
+inputs:
+  path:
+    description: 'Path to manifest file or directory to scan/migrate'
+    required: false
+    default: '.'
+  args:
+    description: 'Extra CLI flags to pass to Janos (e.g. "--audit --format markdown")'
+    required: false
+    default: '--audit --format markdown'
+  check:
+    description: 'Fail step if deprecated APIs are detected (exit 1)'
+    required: false
+    default: 'false'
+  target-version:
+    description: 'Kubernetes version to gate deprecation checks against (e.g. 1.25)'
+    required: false
+  chart:
+    description: 'Path to a Helm chart to render and audit'
+    required: false
+  values:
+    description: 'Values file for Helm chart rendering'
+    required: false
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Set up Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: '20'
+
+    - name: Run Janos
+      shell: bash
+      run: |
+        CMD="node ${{ github.action_path }}/bin/janos.js"
+
+        if [ -n "${{ inputs.chart }}" ]; then
+          CMD="$CMD --chart '${{ inputs.chart }}'"
+          if [ -n "${{ inputs.values }}" ]; then
+            CMD="$CMD --values '${{ inputs.values }}'"
+          fi
+        elif [ -n "${{ inputs.path }}" ]; then
+          if [ -d "${{ inputs.path }}" ]; then
+            CMD="$CMD -d '${{ inputs.path }}'"
+          elif [ -f "${{ inputs.path }}" ]; then
+            CMD="$CMD -f '${{ inputs.path }}'"
+          fi
+        fi
+
+        if [ -n "${{ inputs.target-version }}" ]; then
+          CMD="$CMD --target-version '${{ inputs.target-version }}'"
+        fi
+
+        if [ "${{ inputs.check }}" = "true" ]; then
+          CMD="$CMD --check"
+        fi
+
+        CMD="$CMD --annotations ${{ inputs.args }}"
+
+        echo "Executing: $CMD"
+        eval $CMD

@@ -1,0 +1,15 @@
+- id: janos-audit
+  name: Janos Kubernetes Manifest Audit
+  description: Scan Kubernetes manifests for deprecated API versions
+  entry: npx janos --audit --check -f
+  language: node
+  files: \.(ya?ml)$
+  pass_filenames: true
+
+- id: janos-migrate
+  name: Janos Kubernetes Manifest Migration
+  description: Automatically migrate deprecated Kubernetes APIs in-place
+  entry: npx janos -f
+  language: node
+  files: \.(ya?ml)$
+  pass_filenames: true

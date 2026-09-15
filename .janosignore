@@ -1,0 +1,13 @@
+# Dependency and VCS folders
+node_modules/
+.git/
+.github/
+
+# Helm template helpers and notes (unrendered helper macros)
+templates/_helpers.tpl
+templates/NOTES.txt
+*.tpl
+
+# Kustomize configs
+kustomization.yaml
+kustomization.yml

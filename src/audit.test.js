@@ -97,4 +97,47 @@ metadata:
     assert.match(table, /Deployment/);
     assert.match(table, /apps\/v1beta1/);
   });
+
+  it('should audit raw YAML content directly via auditContent', () => {
+    const { auditContent } = require('./audit');
+    const raw = `
+apiVersion: policy/v1beta1
+kind: PodDisruptionBudget
+metadata:
+  name: api-pdb
+spec:
+  minAvailable: 1
+`;
+    const res = auditContent(raw, 'sample.yaml');
+    assert.equal(res.documentsScanned, 1);
+    assert.equal(res.items.length, 1);
+    assert.equal(res.items[0].kind, 'PodDisruptionBudget');
+    assert.equal(res.items[0].currentApi, 'policy/v1beta1');
+    assert.equal(res.items[0].targetApi, 'policy/v1');
+    assert.equal(res.items[0].removedIn, 'v1.25');
+  });
+
+  it('should format report as GitHub Actions annotations', () => {
+    const { formatGitHubAnnotations } = require('./audit');
+    const fakeReport = {
+      filesScanned: 1,
+      deprecatedCount: 1,
+      items: [
+        {
+          kind: 'Deployment',
+          name: 'frontend',
+          namespace: 'default',
+          currentApi: 'extensions/v1beta1',
+          targetApi: 'apps/v1',
+          removedIn: 'v1.16',
+          file: 'deploy.yaml',
+        },
+      ],
+    };
+
+    const annotations = formatGitHubAnnotations(fakeReport);
+    assert.match(annotations, /^::warning file=deploy\.yaml/);
+    assert.match(annotations, /extensions\/v1beta1/);
+    assert.match(annotations, /apps\/v1/);
+  });
 });

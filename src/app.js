@@ -20,10 +20,47 @@ const yaml = require('./yaml');
 const migration = require('./migration');
 const cli = require('./cli');
 const audit = require('./audit');
+const helm = require('./helm');
 const { convertIngressToGateway } = require('./gateway');
 
-function findYamlFiles(targetDir) {
+function loadIgnorePatterns(targetDir, extraIgnore) {
+  const patterns = ['.git', 'node_modules', '_helpers.tpl', 'NOTES.txt'];
+  const ignoreFile = path.join(targetDir, '.janosignore');
+  if (fs.existsSync(ignoreFile)) {
+    try {
+      const lines = fs.readFileSync(ignoreFile, 'utf8').split(/\r?\n/);
+      for (const line of lines) {
+        const trimmed = line.trim();
+        if (trimmed && !trimmed.startsWith('#')) {
+          patterns.push(trimmed);
+        }
+      }
+    } catch {}
+  }
+  if (extraIgnore) {
+    extraIgnore.split(',').forEach((p) => {
+      const trimmed = p.trim();
+      if (trimmed) patterns.push(trimmed);
+    });
+  }
+  return patterns;
+}
+
+function shouldIgnore(entryName, fullPath, patterns) {
+  const norm = fullPath.replace(/\\/g, '/');
+  for (const pattern of patterns) {
+    if (pattern.startsWith('*.')) {
+      if (norm.endsWith(pattern.slice(1))) return true;
+    } else if (norm.includes(pattern) || entryName === pattern) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function findYamlFiles(targetDir, options = {}) {
   const results = [];
+  const ignorePatterns = loadIgnorePatterns(targetDir, options.ignore);
 
   function walk(current) {
     let entries;
@@ -34,10 +71,13 @@ function findYamlFiles(targetDir) {
     }
 
     for (const entry of entries) {
-      if (entry.name.startsWith('.') || entry.name === 'node_modules') {
+      if (entry.name.startsWith('.') && entry.name !== '.janosignore') {
         continue;
       }
       const fullPath = path.join(current, entry.name);
+      if (shouldIgnore(entry.name, fullPath, ignorePatterns)) {
+        continue;
+      }
       if (entry.isDirectory()) {
         walk(fullPath);
       } else if (entry.isFile()) {
@@ -108,7 +148,32 @@ function convertFile(filePath, options = {}) {
 
   try {
     const originalContent = fs.readFileSync(filePath, 'utf8');
-    const docs = yaml.parseDocuments(originalContent);
+
+    // If file contains Go template directives {{ ... }}, use Helm template migrator
+    if (helm.isHelmTemplate(originalContent)) {
+      const res = helm.migrateHelmTemplate(originalContent, options);
+      if (res.changed) {
+        if (options.diff) {
+          const diff = createUnifiedDiff(originalContent, res.content, filePath);
+          if (diff) console.log(diff + '\n');
+        }
+        if (!options.dryRun && !options.check) {
+          fs.writeFileSync(filePath, res.content, 'utf8');
+        }
+      }
+      return { filePath, changed: res.changed, events: res.events, error: null };
+    }
+
+    let docs;
+    try {
+      docs = yaml.parseDocuments(originalContent);
+    } catch (parseErr) {
+      if (helm.isHelmTemplate(originalContent) || filePath.endsWith('.tpl')) {
+        const res = helm.migrateHelmTemplate(originalContent, options);
+        return { filePath, changed: res.changed, events: res.events, error: null };
+      }
+      throw parseErr;
+    }
 
     if (!docs || docs.length === 0) {
       return { filePath, changed: false, events: [], error: null };
@@ -171,6 +236,170 @@ function convertFile(filePath, options = {}) {
   }
 }
 
+function handleStdin(args) {
+  let content = '';
+  try {
+    content = fs.readFileSync(0, 'utf8');
+  } catch (err) {
+    console.error(`\x1b[31mError reading from STDIN:\x1b[0m ${err.message}`);
+    process.exitCode = 1;
+    return;
+  }
+
+  if (!content || !content.trim()) {
+    if (!args.quiet) console.error('Empty STDIN stream received.');
+    return;
+  }
+
+  if (args.audit) {
+    const auditRes = audit.auditContent(content, 'STDIN', args);
+    const report = {
+      filesScanned: 1,
+      documentsScanned: auditRes.documentsScanned,
+      deprecatedCount: auditRes.items.length,
+      items: auditRes.items,
+    };
+    const output = audit.formatReport(report, args.format);
+    console.log(output);
+
+    if (args.annotations) {
+      const annotations = audit.formatGitHubAnnotations(report);
+      if (annotations) console.log(annotations);
+    }
+
+    if (process.env.GITHUB_STEP_SUMMARY && (args.format === 'markdown' || args.format === 'md')) {
+      try {
+        fs.appendFileSync(process.env.GITHUB_STEP_SUMMARY, output + '\n');
+      } catch {}
+    }
+
+    if (args.check && report.deprecatedCount > 0) {
+      process.exitCode = 1;
+    }
+    return;
+  }
+
+  try {
+    const docs = yaml.parseDocuments(content);
+    const events = [];
+    const reporter = (e) => events.push(e);
+
+    const migratedDocs = migration.parseDocs(docs, {
+      reporter,
+      targetVersion: args.targetVersion,
+    });
+    const newContent = yaml.dumpDocuments(migratedDocs);
+
+    if (args.diff) {
+      const diff = createUnifiedDiff(content, newContent, 'STDIN');
+      if (diff) console.log(diff);
+      if (args.check && content.trim() !== newContent.trim()) {
+        process.exitCode = 1;
+      }
+      return;
+    }
+
+    if (args.check) {
+      if (content.trim() !== newContent.trim()) {
+        process.exitCode = 1;
+      }
+      return;
+    }
+
+    process.stdout.write(newContent);
+
+    if (!args.quiet && events.length > 0) {
+      console.error(`\nMigrated ${events.length} resource(s) from STDIN.`);
+    }
+  } catch (err) {
+    console.error(`\x1b[31mError processing STDIN stream:\x1b[0m ${err.message}`);
+    process.exitCode = 1;
+  }
+}
+
+function handleHelmChart(args) {
+  if (!helm.isHelmInstalled()) {
+    console.error('\x1b[31mError:\x1b[0m "helm" command not found in PATH. Install Helm (https://helm.sh) to render and audit charts.');
+    process.exitCode = 1;
+    return;
+  }
+
+  if (!fs.existsSync(args.chart)) {
+    console.error(`\x1b[31mError:\x1b[0m Helm chart path does not exist: ${args.chart}`);
+    process.exitCode = 1;
+    return;
+  }
+
+  if (!args.quiet) {
+    console.error(`Rendering Helm chart at "${args.chart}"...`);
+  }
+
+  let renderedYaml;
+  try {
+    renderedYaml = helm.renderChart(args.chart, {
+      values: args.values,
+      kubeVersion: args.targetVersion,
+    });
+  } catch (err) {
+    console.error(`\x1b[31mError:\x1b[0m ${err.message}`);
+    process.exitCode = 1;
+    return;
+  }
+
+  if (args.audit) {
+    const auditRes = audit.auditContent(renderedYaml, path.basename(args.chart), args);
+    const report = {
+      filesScanned: 1,
+      documentsScanned: auditRes.documentsScanned,
+      deprecatedCount: auditRes.items.length,
+      items: auditRes.items,
+    };
+    const output = audit.formatReport(report, args.format);
+    console.log(output);
+
+    if (args.annotations) {
+      const annotations = audit.formatGitHubAnnotations(report);
+      if (annotations) console.log(annotations);
+    }
+
+    if (process.env.GITHUB_STEP_SUMMARY && (args.format === 'markdown' || args.format === 'md')) {
+      try {
+        fs.appendFileSync(process.env.GITHUB_STEP_SUMMARY, output + '\n');
+      } catch {}
+    }
+
+    if (args.check && report.deprecatedCount > 0) {
+      process.exitCode = 1;
+    }
+    return;
+  }
+
+  const docs = yaml.parseDocuments(renderedYaml);
+  const events = [];
+  const reporter = (e) => events.push(e);
+  const migratedDocs = migration.parseDocs(docs, {
+    reporter,
+    targetVersion: args.targetVersion,
+  });
+  const newContent = yaml.dumpDocuments(migratedDocs);
+
+  if (args.diff) {
+    const diff = createUnifiedDiff(renderedYaml, newContent, `Chart: ${path.basename(args.chart)}`);
+    if (diff) console.log(diff);
+    if (args.check && renderedYaml.trim() !== newContent.trim()) {
+      process.exitCode = 1;
+    }
+    return;
+  }
+
+  if (args.out) {
+    fs.writeFileSync(args.out, newContent, 'utf8');
+    if (!args.quiet) console.error(`Rendered and migrated chart saved to: ${args.out}`);
+  } else {
+    process.stdout.write(newContent);
+  }
+}
+
 function main(argv) {
   let args;
   try {
@@ -192,8 +421,20 @@ function main(argv) {
     return;
   }
 
+  // 1. STDIN Mode
+  if (args.stdin) {
+    handleStdin(args);
+    return;
+  }
+
+  // 2. Helm Chart Mode
+  if (args.chart) {
+    handleHelmChart(args);
+    return;
+  }
+
   if (!args.file && !args.dir) {
-    console.error('\x1b[31mError:\x1b[0m argument -d or -f must be provided.');
+    console.error('\x1b[31mError:\x1b[0m argument -d, -f, --chart, or STDIN must be provided.');
     console.log(cli.getHelpText());
     process.exitCode = 1;
     return;
@@ -213,7 +454,7 @@ function main(argv) {
       process.exitCode = 1;
       return;
     }
-    filesToProcess = findYamlFiles(args.dir);
+    filesToProcess = findYamlFiles(args.dir, { ignore: args.ignore });
   }
 
   if (filesToProcess.length === 0) {
@@ -228,6 +469,17 @@ function main(argv) {
     const report = audit.auditFiles(filesToProcess);
     const output = audit.formatReport(report, args.format);
     console.log(output);
+
+    if (args.annotations) {
+      const annotations = audit.formatGitHubAnnotations(report);
+      if (annotations) console.log(annotations);
+    }
+
+    if (process.env.GITHUB_STEP_SUMMARY && (args.format === 'markdown' || args.format === 'md')) {
+      try {
+        fs.appendFileSync(process.env.GITHUB_STEP_SUMMARY, output + '\n');
+      } catch {}
+    }
 
     if (args.check && report.deprecatedCount > 0) {
       process.exitCode = 1;
@@ -312,4 +564,6 @@ module.exports = {
   convertFile,
   findYamlFiles,
   createUnifiedDiff,
+  handleStdin,
+  handleHelmChart,
 };

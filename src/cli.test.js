@@ -45,6 +45,33 @@ describe('CLI argument parser', () => {
     assert.throws(() => cli.parseArgs({}), /argument -d or -f must be provided/);
   });
 
+  it('should parse stdin flag and positional hyphen -', () => {
+    const res1 = cli.parseArgs(['-']);
+    assert.equal(res1.stdin, true);
+    assert.equal(res1.file, undefined);
+
+    const res2 = cli.parseArgs(['--stdin']);
+    assert.equal(res2.stdin, true);
+
+    const res3 = cli.parseArgs(['-f', '-']);
+    assert.equal(res3.stdin, true);
+  });
+
+  it('should parse --chart, --helm, and --values', () => {
+    const res1 = cli.parseArgs(['--chart', './my-chart', '--values', './val.yaml']);
+    assert.ok(res1.chart.endsWith('my-chart'));
+    assert.ok(res1.values.endsWith('val.yaml'));
+
+    const res2 = cli.parseArgs(['--helm', './other-chart']);
+    assert.ok(res2.chart.endsWith('other-chart'));
+  });
+
+  it('should parse --ignore and --annotations', () => {
+    const res = cli.parseArgs(['-d', './k8s', '--ignore', '*.tmp.yaml', '--annotations']);
+    assert.equal(res.ignore, '*.tmp.yaml');
+    assert.equal(res.annotations, true);
+  });
+
   it('should return version string', () => {
     const version = cli.getVersion();
     assert.equal(typeof version, 'string');
@@ -55,6 +82,7 @@ describe('CLI argument parser', () => {
     const help = cli.getHelpText();
     assert.match(help, /Usage:/);
     assert.match(help, /--dry-run/);
+    assert.match(help, /--chart/);
     assert.match(help, /--check/);
   });
 });

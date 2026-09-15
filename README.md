@@ -29,10 +29,14 @@
 
 ## 🥊 Why Janos vs. `kubectl-convert` & Pluto?
 
-| Capability | `kubectl-convert` (Official Plugin) | Pluto (Fairwinds) | **Janos 2.0** |
+| Capability | `kubectl-convert` (Official Plugin) | Pluto (Fairwinds) | **Janos 2.1** |
 | :--- | :---: | :---: | :---: |
 | **In-Place File Updates** | ❌ (Stdout only) | ❌ (Read-only) | ✅ **Yes, recursive directory updates** |
 | **Preserves Comments & Indentation** | ❌ **Strips all comments** | N/A | ✅ **100% Preserved (AST engine)** |
+| **First-Class Helm Support** | ❌ No | ⚠️ Rendered only | ✅ **Direct chart render (`--chart`) + template migrator** |
+| **STDIN Piping (Helm & Kustomize)** | ❌ No | ⚠️ Partial | ✅ **`helm/kustomize \| janos -`** |
+| **Official GitHub Action & Annotations** | ❌ No | ⚠️ Custom setup | ✅ **`uses: pgold30/janos@master`** |
+| **Pre-commit Hooks** | ❌ No | ❌ No | ✅ **`.pre-commit-hooks.yaml` included** |
 | **Zero-Install (`npx`)** | ❌ (Separate binary install) | ❌ (Binary install) | ✅ **Instant via `npx janos`** |
 | **Ingress ➔ Gateway API Migration** | ❌ (Not supported) | ❌ (Not supported) | ✅ **Built-in (`--ingress-to-gateway`)** |
 | **Target Version Gating** | ❌ (Converts to latest only) | N/A | ✅ **`--target-version <v>`** |
@@ -151,6 +155,91 @@ janos --ingress-to-gateway -f ingress.yaml
 
 # Generate HTTPRoute and companion Gateway resource:
 janos --ingress-to-gateway --generate-gateway -f ingress.yaml --out gateway-resources.yaml
+```
+
+### 4. ⎈ First-Class Helm Chart & Template Support
+Janos provides three powerful ways to work with Helm:
+
+#### A. Direct Chart Rendering & Auditing (`--chart` / `--helm`)
+Point Janos directly to your Helm chart directory. Janos renders the chart via `helm template` under the hood and audits or diffs the rendered resources:
+
+```sh
+# Audit a Helm chart directory:
+janos --chart ./charts/my-app --audit
+
+# Audit a Helm chart with custom production values:
+janos --chart ./charts/my-app --values ./values-prod.yaml --audit --format markdown
+```
+
+#### B. Direct Helm Template In-Place Migration
+Have raw Helm templates (`templates/*.yaml`) full of Go template interpolations (`{{ .Values... }}`, `{{- if ... }}`)?
+Janos's template engine detects Go template blocks, updates deprecated `apiVersion:` lines, and preserves all `{{ ... }}` template expressions byte-for-byte:
+
+```sh
+# Safely upgrade deprecated APIs inside Helm template files:
+janos -d ./charts/my-app/templates
+```
+
+#### C. Helm STDIN Streaming
+Pipe rendered Helm outputs directly into Janos:
+
+```sh
+helm template my-release ./charts/my-app | janos - --audit --format markdown
+helm template my-release ./charts/my-app | janos - --diff
+```
+
+---
+
+### 5. 🚰 STDIN & Unix Pipeline Integration (Helm & Kustomize)
+Janos treats standard input (`-`) as a first-class citizen. Output pure migrated YAML to `stdout` while logs and warnings are routed cleanly to `stderr`:
+
+```sh
+# Kustomize pipeline diff:
+kustomize build overlays/production | janos - --diff
+
+# Pipe and save migrated manifests:
+cat legacy-deploy.yaml | janos - > modern-deploy.yaml
+```
+
+---
+
+### 6. 🤖 Official GitHub Action (`action.yml`)
+Add Janos directly to your GitHub Actions workflows with zero installation:
+
+```yaml
+name: Kubernetes Deprecation Gate
+
+on: [pull_request]
+
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Audit Kubernetes Manifests
+        uses: pgold30/janos@master
+        with:
+          path: './k8s'
+          args: '--audit --format markdown'
+          check: 'true'
+          target-version: '1.25'
+```
+
+*When running in GitHub Actions, Janos automatically creates PR line annotations (`::warning`) and writes markdown reports to the Job Summary!*
+
+---
+
+### 7. 🪝 Pre-commit Hook Integration
+Prevent deprecated Kubernetes manifests from ever being committed to your git repository. Add Janos to your `.pre-commit-config.yaml`:
+
+```yaml
+repos:
+  - repo: https://github.com/pgold30/janos
+    rev: v2.1.0
+    hooks:
+      - id: janos-audit     # Read-only verification before commit
+      # - id: janos-migrate # Or auto-migrate in-place before commit
 ```
 
 ---
