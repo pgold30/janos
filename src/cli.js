@@ -174,7 +174,7 @@ function parseArgs(inputArgv) {
     generateGateway: Boolean(values['generate-gateway']),
     out: values.out ? path.resolve(BASE_DIR, values.out) : undefined,
     ignore: values.ignore,
-    annotations: Boolean(values.annotations || process.env.GITHUB_ACTIONS === 'true'),
+    annotations: Boolean(values.annotations || (process.env.GITHUB_ACTIONS === 'true' && values.format !== 'json')),
     quiet: Boolean(values.quiet),
     help: Boolean(values.help),
     version: Boolean(values.version),

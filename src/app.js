@@ -267,7 +267,7 @@ function handleStdin(args) {
       console.log(output);
     }
 
-    if (args.annotations) {
+    if (args.annotations && args.format !== 'json') {
       const annotations = audit.formatGitHubAnnotations(report);
       if (annotations) console.log(annotations);
     }
@@ -367,7 +367,7 @@ function handleHelmChart(args) {
       console.log(output);
     }
 
-    if (args.annotations) {
+    if (args.annotations && args.format !== 'json') {
       const annotations = audit.formatGitHubAnnotations(report);
       if (annotations) console.log(annotations);
     }
@@ -485,7 +485,7 @@ function main(argv) {
       console.log(output);
     }
 
-    if (args.annotations) {
+    if (args.annotations && args.format !== 'json') {
       const annotations = audit.formatGitHubAnnotations(report);
       if (annotations) console.log(annotations);
     }
