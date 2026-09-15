@@ -101,22 +101,54 @@ function convertIngressToGateway(ingressResource, options = {}) {
             });
           }
 
+          const filters = [];
+
           // Check for rewrite-target annotation
           const rewriteTarget =
             annotations['nginx.ingress.kubernetes.io/rewrite-target'] ||
             annotations['ingress.kubernetes.io/rewrite-target'];
           if (rewriteTarget) {
-            ruleItem.filters = [
-              {
-                type: 'URLRewrite',
-                urlRewrite: {
-                  path: {
-                    type: 'ReplacePrefixMatch',
-                    replacePrefixMatch: rewriteTarget,
-                  },
+            filters.push({
+              type: 'URLRewrite',
+              urlRewrite: {
+                path: {
+                  type: 'ReplacePrefixMatch',
+                  replacePrefixMatch: rewriteTarget,
                 },
               },
-            ];
+            });
+          }
+
+          // Check for ssl-redirect annotation
+          const sslRedirect =
+            annotations['nginx.ingress.kubernetes.io/ssl-redirect'] ||
+            annotations['ingress.kubernetes.io/ssl-redirect'];
+          if (sslRedirect === 'true' || sslRedirect === true) {
+            filters.push({
+              type: 'RequestRedirect',
+              requestRedirect: {
+                scheme: 'https',
+                statusCode: 301,
+                port: 443,
+              },
+            });
+          }
+
+          // Check for permanent-redirect annotation
+          const permRedirect =
+            annotations['nginx.ingress.kubernetes.io/permanent-redirect'] ||
+            annotations['ingress.kubernetes.io/permanent-redirect'];
+          if (permRedirect) {
+            filters.push({
+              type: 'RequestRedirect',
+              requestRedirect: {
+                statusCode: 301,
+              },
+            });
+          }
+
+          if (filters.length > 0) {
+            ruleItem.filters = filters;
           }
 
           rules.push(ruleItem);

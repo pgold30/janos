@@ -148,4 +148,33 @@ describe('Ingress to Gateway API converter', () => {
     assert.equal(listeners[1].protocol, 'HTTPS');
     assert.equal(listeners[1].tls.certificateRefs[0].name, 'secure-cert-tls');
   });
+
+  it('should translate ssl-redirect annotation into RequestRedirect filter', () => {
+    const ingress = {
+      apiVersion: 'networking.k8s.io/v1',
+      kind: 'Ingress',
+      metadata: {
+        name: 'ssl-app',
+        annotations: {
+          'nginx.ingress.kubernetes.io/ssl-redirect': 'true',
+        },
+      },
+      spec: {
+        rules: [
+          {
+            http: {
+              paths: [{ path: '/', backend: { service: { name: 'app', port: { number: 80 } } } }],
+            },
+          },
+        ],
+      },
+    };
+
+    const [route] = convertIngressToGateway(ingress);
+    const filter = route.spec.rules[0].filters.find((f) => f.type === 'RequestRedirect');
+    assert.ok(filter);
+    assert.equal(filter.requestRedirect.scheme, 'https');
+    assert.equal(filter.requestRedirect.port, 443);
+    assert.equal(filter.requestRedirect.statusCode, 301);
+  });
 });

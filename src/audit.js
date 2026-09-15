@@ -26,6 +26,24 @@ function toJS(doc) {
   return doc;
 }
 
+function parseVersionNum(vStr) {
+  if (!vStr) return 999;
+  const match = String(vStr).replace(/^v/, '').match(/^(\d+)\.(\d+)/);
+  if (!match) return 999;
+  return parseInt(match[1], 10) * 100 + parseInt(match[2], 10);
+}
+
+function filterRemovedItems(items, options = {}) {
+  if (!options.onlyRemoved) return items;
+  const targetVer = options.targetVersion
+    ? parseVersionNum(options.targetVersion)
+    : parseVersionNum('1.32');
+  return items.filter((item) => {
+    const remVer = parseVersionNum(item.removedIn);
+    return remVer <= targetVer;
+  });
+}
+
 /**
  * Audits a string of YAML (or Helm template) content.
  *
@@ -39,7 +57,7 @@ function auditContent(content, sourceName = 'STDIN', options = {}) {
   let documentsScanned = 0;
 
   if (helm.isHelmTemplate(content)) {
-    const templateItems = helm.auditHelmTemplate(content, sourceName);
+    const templateItems = filterRemovedItems(helm.auditHelmTemplate(content, sourceName), options);
     return {
       documentsScanned: templateItems.length > 0 ? templateItems.length : 1,
       items: templateItems,
@@ -51,7 +69,7 @@ function auditContent(content, sourceName = 'STDIN', options = {}) {
     docs = yaml.parseDocuments(content);
   } catch {
     // If regular YAML parsing fails, try line-based Helm template audit as fallback
-    const fallbackItems = helm.auditHelmTemplate(content, sourceName);
+    const fallbackItems = filterRemovedItems(helm.auditHelmTemplate(content, sourceName), options);
     return {
       documentsScanned: fallbackItems.length > 0 ? fallbackItems.length : 1,
       items: fallbackItems,
@@ -92,7 +110,7 @@ function auditContent(content, sourceName = 'STDIN', options = {}) {
     }
   }
 
-  return { documentsScanned, items };
+  return { documentsScanned, items: filterRemovedItems(items, options) };
 }
 
 /**

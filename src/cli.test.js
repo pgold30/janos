@@ -72,6 +72,12 @@ describe('CLI argument parser', () => {
     assert.equal(res.annotations, true);
   });
 
+  it('should parse --only-removed and --output-file', () => {
+    const res = cli.parseArgs(['-d', './k8s', '--only-removed', '--output-file', 'report.md']);
+    assert.equal(res.onlyRemoved, true);
+    assert.ok(res.outputFile.endsWith('report.md'));
+  });
+
   it('should return version string', () => {
     const version = cli.getVersion();
     assert.equal(typeof version, 'string');

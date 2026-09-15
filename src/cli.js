@@ -48,7 +48,9 @@ Core Options:
 Advanced Options:
       --target-version <ver>    Gate migrations up to a specific Kubernetes version (e.g. 1.25)
       --audit, --scan           Pluto-style read-only audit: scan and print summary table
+      --only-removed            Audit: only list APIs that are completely removed in target version
       --format <format>         Output format: table (default), markdown, json, or annotations
+      --output-file <file>      Write audit report directly to a file
       --ingress-to-gateway      Translate Ingress manifests to Gateway API (HTTPRoute)
       --generate-gateway        Generate companion Gateway resource with --ingress-to-gateway
       --out <file>              Output file path for generated resources (default: in-place or stdout)
@@ -126,6 +128,8 @@ function parseArgs(inputArgv) {
     audit: { type: 'boolean', default: false },
     scan: { type: 'boolean', default: false },
     format: { type: 'string', default: 'table' },
+    'only-removed': { type: 'boolean', default: false },
+    'output-file': { type: 'string' },
     'target-version': { type: 'string' },
     'ingress-to-gateway': { type: 'boolean', default: false },
     'generate-gateway': { type: 'boolean', default: false },
@@ -163,6 +167,8 @@ function parseArgs(inputArgv) {
     check: Boolean(values.check),
     audit: isAudit,
     format: values.format || 'table',
+    onlyRemoved: Boolean(values['only-removed']),
+    outputFile: values['output-file'] ? path.resolve(BASE_DIR, values['output-file']) : undefined,
     targetVersion: values['target-version'],
     ingressToGateway: Boolean(values['ingress-to-gateway']),
     generateGateway: Boolean(values['generate-gateway']),

@@ -9,7 +9,12 @@ const fs = require('node:fs');
 const path = require('node:path');
 const os = require('node:os');
 
-const { auditFiles, formatReport } = require('./audit');
+const {
+  auditFiles,
+  auditContent,
+  formatReport,
+  formatGitHubAnnotations,
+} = require('./audit');
 
 describe('Pluto-style Audit module', () => {
   it('should scan files and identify deprecated APIs', () => {
@@ -139,5 +144,28 @@ spec:
     assert.match(annotations, /^::warning file=deploy\.yaml/);
     assert.match(annotations, /extensions\/v1beta1/);
     assert.match(annotations, /apps\/v1/);
+  });
+
+  it('should filter items by onlyRemoved against targetVersion', () => {
+    const raw = `
+apiVersion: extensions/v1beta1
+kind: Deployment
+metadata:
+  name: dep
+---
+apiVersion: batch/v1beta1
+kind: CronJob
+metadata:
+  name: cron
+`;
+    // Gated to target version 1.22: Deployment removed in 1.16 is removed; CronJob removed in 1.25 is NOT yet removed.
+    const res = auditContent(raw, 'test.yaml', {
+      onlyRemoved: true,
+      targetVersion: '1.22',
+    });
+
+    assert.equal(res.items.length, 1);
+    assert.equal(res.items[0].kind, 'Deployment');
+    assert.equal(res.items[0].removedIn, 'v1.16');
   });
 });

@@ -260,7 +260,12 @@ function handleStdin(args) {
       items: auditRes.items,
     };
     const output = audit.formatReport(report, args.format);
-    console.log(output);
+    if (args.outputFile) {
+      fs.writeFileSync(args.outputFile, output, 'utf8');
+      if (!args.quiet) console.error(`Audit report written to: ${args.outputFile}`);
+    } else {
+      console.log(output);
+    }
 
     if (args.annotations) {
       const annotations = audit.formatGitHubAnnotations(report);
@@ -355,7 +360,12 @@ function handleHelmChart(args) {
       items: auditRes.items,
     };
     const output = audit.formatReport(report, args.format);
-    console.log(output);
+    if (args.outputFile) {
+      fs.writeFileSync(args.outputFile, output, 'utf8');
+      if (!args.quiet) console.error(`Audit report written to: ${args.outputFile}`);
+    } else {
+      console.log(output);
+    }
 
     if (args.annotations) {
       const annotations = audit.formatGitHubAnnotations(report);
@@ -466,9 +476,14 @@ function main(argv) {
 
   // Pluto-style Audit mode
   if (args.audit) {
-    const report = audit.auditFiles(filesToProcess);
+    const report = audit.auditFiles(filesToProcess, args);
     const output = audit.formatReport(report, args.format);
-    console.log(output);
+    if (args.outputFile) {
+      fs.writeFileSync(args.outputFile, output, 'utf8');
+      if (!args.quiet) console.log(`Audit report written to: ${args.outputFile}`);
+    } else {
+      console.log(output);
+    }
 
     if (args.annotations) {
       const annotations = audit.formatGitHubAnnotations(report);
