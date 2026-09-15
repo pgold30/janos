@@ -6,7 +6,7 @@
 
 **The Automated Kubernetes Manifest Migration & Gateway API Transition Tool**
 
-*Effortlessly upgrade your Kubernetes manifests from version 1.16 to 1.32+, audit deprecated APIs, and convert Ingress to Gateway API while keeping your YAML comments and formatting intact.*
+*Effortlessly upgrade your Kubernetes manifests from version 1.16 to 1.32+, audit deprecated APIs, and convert Ingress to Gateway API — while keeping 100% of your YAML comments and formatting intact.*
 
 [![CI](https://github.com/pgold30/janos/actions/workflows/ci.yml/badge.svg)](https://github.com/pgold30/janos/actions/workflows/ci.yml)
 [![Node.js](https://img.shields.io/badge/node-%3E%3D18.0.0-brightgreen.svg)](https://nodejs.org/)
@@ -23,22 +23,35 @@
 >
 > When upgrading Kubernetes clusters, deprecated and removed APIs inevitably break deployments. Running manual find-and-replace across hundreds of GitOps repositories or Helm-free manifests is tedious, error-prone, and destroys your comments.
 >
-> **Janos bridges the gap**: it audits and scans your manifests (like Pluto), updates deprecated `apiVersion`s in-place with target version gating (like `kubectl-convert`), converts Ingresses to modern Gateway API `HTTPRoute`s (like `ingress2gateway`), and writes upgraded files back — **without stripping a single comment or reformatting your whitespace**.
+> **Janos bridges the gap**: it audits your manifests (like Pluto), updates deprecated `apiVersion`s in-place with target version gating, converts Ingresses to modern Gateway API `HTTPRoute`s (like `ingress2gateway`), and writes upgraded files back — **without stripping a single comment or reformatting your whitespace**.
+
+---
+
+## 🥊 Why Janos vs. `kubectl-convert` & Pluto?
+
+| Capability | `kubectl-convert` (Official Plugin) | Pluto (Fairwinds) | **Janos 2.0** |
+| :--- | :---: | :---: | :---: |
+| **In-Place File Updates** | ❌ (Stdout only) | ❌ (Read-only) | ✅ **Yes, recursive directory updates** |
+| **Preserves Comments & Indentation** | ❌ **Strips all comments** | N/A | ✅ **100% Preserved (AST engine)** |
+| **Zero-Install (`npx`)** | ❌ (Separate binary install) | ❌ (Binary install) | ✅ **Instant via `npx janos`** |
+| **Ingress ➔ Gateway API Migration** | ❌ (Not supported) | ❌ (Not supported) | ✅ **Built-in (`--ingress-to-gateway`)** |
+| **Target Version Gating** | ❌ (Converts to latest only) | N/A | ✅ **`--target-version <v>`** |
+| **Safe Color Diffs & Dry-Run** | ❌ No | N/A | ✅ **`--diff` and `--dry-run`** |
+| **CI / CD PR Gate & Markdown Reports** | ❌ No | ⚠️ Partial | ✅ **`--check` & `--format markdown`** |
+| **Read-Only Deprecation Audit** | ❌ No | ✅ Yes | ✅ **`--audit` / `--scan`** |
 
 ---
 
 ## ⚡ Highlights
 
-| Feature | Description |
-| :--- | :--- |
-| 🛡️ **Preserves Comments & AST** | Full AST-aware engine retaining header comments, inline comments, anchors, and blank lines. |
-| 🎯 **Target Version Gating** | `--target-version 1.25`: Only apply deprecations up to your cluster's target version, leaving future removals untouched. |
-| 📊 **Pluto-Style Read-Only Audit** | `--audit` / `--scan`: Instant overview table of all deprecated APIs across your repo without touching files. |
-| 📝 **PR-Ready Markdown Reports** | `--format markdown`: Generate GitHub Actions-ready summary tables to post directly as PR comments. |
-| 🌉 **Ingress to Gateway API** | `--ingress-to-gateway`: Translate legacy Ingress manifests into modern Kubernetes Gateway API `HTTPRoute` and `Gateway` resources. |
-| 🔎 **Safe Preview & Color Diff** | `--dry-run` and `--diff` provide instant, color-coded unified diffs without modifying files. |
-| 🚦 **CI / CD Pipeline Gate** | `--check` flag exits `1` when outdated manifests exist, `0` when clean. Ideal for PR gates. |
-| 🚀 **Zero-Install Execution** | Run immediately anywhere with `npx janos` or use the official Docker image. |
+- 🛡️ **Preserves Comments & AST**: Full AST-aware engine retaining header comments, inline comments, anchors, and blank lines.
+- 🎯 **Target Version Gating**: `--target-version 1.25`: Only apply deprecations up to your cluster's target version, leaving future removals untouched.
+- 📊 **Pluto-Style Read-Only Audit**: `--audit` / `--scan`: Instant overview table of all deprecated APIs across your repo without touching files.
+- 📝 **PR-Ready Markdown Reports**: `--format markdown`: Generate GitHub Actions-ready summary tables to post directly as PR comments.
+- 🌉 **Ingress to Gateway API**: `--ingress-to-gateway`: Translate legacy Ingress manifests into modern Kubernetes Gateway API `HTTPRoute` and `Gateway` resources.
+- 🔎 **Safe Preview & Color Diff**: `--dry-run` and `--diff` provide instant, color-coded unified diffs without modifying files.
+- 🚦 **CI / CD Pipeline Gate**: `--check` flag exits `1` when outdated manifests exist, `0` when clean. Ideal for PR gates.
+- 🚀 **Zero-Install Execution**: Run immediately anywhere with `npx janos` or use the official Docker image.
 
 ---
 
@@ -47,16 +60,16 @@
 Run instantly without cloning or installing:
 
 ```sh
-# Pluto-style read-only audit:
+# 1. Pluto-style read-only deprecation audit:
 npx janos --audit -d ./k8s-manifests
 
-# Preview changes with colorized diff:
+# 2. Preview changes with colorized diff:
 npx janos -d ./k8s-manifests --dry-run --diff
 
-# Gate migration up to Kubernetes 1.25 only:
+# 3. Gate migration up to Kubernetes 1.25 only:
 npx janos -d ./k8s-manifests --target-version 1.25
 
-# Convert Ingress manifests to Gateway API HTTPRoutes:
+# 4. Convert Ingress manifests to Gateway API HTTPRoutes:
 npx janos --ingress-to-gateway -d ./k8s-manifests
 ```
 
