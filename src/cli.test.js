@@ -78,6 +78,24 @@ describe('CLI argument parser', () => {
     assert.ok(res.outputFile.endsWith('report.md'));
   });
 
+  it('should parse -i and --interactive', () => {
+    const res1 = cli.parseArgs(['-d', './k8s', '-i']);
+    assert.equal(res1.interactive, true);
+
+    const res2 = cli.parseArgs(['-d', './k8s', '--interactive']);
+    assert.equal(res2.interactive, true);
+  });
+
+  it('should parse --cluster, --live, --namespace, and --kubeconfig', () => {
+    const res1 = cli.parseArgs(['--cluster', '--audit']);
+    assert.equal(res1.cluster, true);
+
+    const res2 = cli.parseArgs(['--live', '--namespace', 'kube-system', '--kubeconfig', './my-kubeconfig']);
+    assert.equal(res2.cluster, true);
+    assert.equal(res2.namespace, 'kube-system');
+    assert.ok(res2.kubeconfig.endsWith('my-kubeconfig'));
+  });
+
   it('should return version string', () => {
     const version = cli.getVersion();
     assert.equal(typeof version, 'string');

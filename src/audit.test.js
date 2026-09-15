@@ -168,4 +168,29 @@ metadata:
     assert.equal(res.items[0].kind, 'Deployment');
     assert.equal(res.items[0].removedIn, 'v1.16');
   });
+
+  it('should tag items with status REMOVED vs DEPRECATED correctly', () => {
+    const raw = `
+apiVersion: extensions/v1beta1
+kind: Ingress
+metadata:
+  name: my-ing
+---
+apiVersion: batch/v1beta1
+kind: CronJob
+metadata:
+  name: my-cron
+`;
+    // Ingress removed in 1.22; CronJob removed in 1.25.
+    // Targeting 1.22: Ingress is REMOVED, CronJob is DEPRECATED.
+    const res = auditContent(raw, 'test.yaml', {
+      targetVersion: '1.22',
+    });
+
+    assert.equal(res.items.length, 2);
+    assert.equal(res.items[0].kind, 'Ingress');
+    assert.equal(res.items[0].status, 'REMOVED');
+    assert.equal(res.items[1].kind, 'CronJob');
+    assert.equal(res.items[1].status, 'DEPRECATED');
+  });
 });

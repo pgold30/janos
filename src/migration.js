@@ -75,6 +75,13 @@ function parseVersion(v) {
   return parseFloat(`${match[1]}.${match[2]}`);
 }
 
+function parseVersionNum(vStr) {
+  if (!vStr) return 9999;
+  const match = String(vStr).replace(/^v/, '').match(/^(\d+)\.(\d+)/);
+  if (!match) return 9999;
+  return parseInt(match[1], 10) * 1000 + parseInt(match[2], 10);
+}
+
 function normalizeKind(kind) {
   if (!kind || typeof kind !== 'string') return kind;
   const lower = kind.toLowerCase();
@@ -500,5 +507,6 @@ module.exports = {
   normalizeKind,
   getRemovalVersion,
   parseVersion,
+  parseVersionNum,
   MIGRATION_RULES,
 };

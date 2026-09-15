@@ -27,29 +27,24 @@
 
 ---
 
-## 🥊 Why Janos vs. `kubectl-convert`, Pluto & `ingress2gateway`?
+## 🥊 Why Janos vs. Pluto & `kubectl-convert`?
 
-| Capability | `kubectl-convert` (Official) | Pluto (Fairwinds) | `ingress2gateway` (SIG-Network) | **Janos 2.1** |
-| :--- | :---: | :---: | :---: | :---: |
-| **In-Place File Updates** | ❌ (Stdout only) | ❌ (Read-only) | ❌ (Stdout / separate file) | ✅ **Yes, recursive directory updates** |
-| **Preserves Comments & Whitespace** | ❌ **Strips all comments** | N/A | ❌ **Strips comments** | ✅ **100% Preserved (AST engine)** |
-| **First-Class Helm Support** | ❌ No | ⚠️ Rendered only | ❌ No | ✅ **Direct chart render (`--chart`) + template migrator** |
-| **STDIN Piping (Helm & Kustomize)** | ❌ No | ⚠️ Partial | ❌ No | ✅ **`helm/kustomize \| janos -`** |
-| **Ingress ➔ Gateway API Migration** | ❌ (Not supported) | ❌ (Not supported) | ✅ Yes | ✅ **Built-in (`--ingress-to-gateway`)** |
-| **Read-Only Deprecation Audit** | ❌ No | ✅ Yes | ❌ No | ✅ **`--audit` / `--scan`** |
-| **Only Show Removed APIs** | ❌ No | ✅ Yes | ❌ No | ✅ **`--only-removed`** |
-| **Target Version Gating** | ❌ (Latest only) | N/A | ❌ No | ✅ **`--target-version <v>`** |
-| **Safe Color Diffs & Dry-Run** | ❌ No | N/A | ❌ No | ✅ **`--diff` and `--dry-run`** |
-| **CI / CD PR Gate & Markdown Reports** | ❌ No | ⚠️ Partial | ❌ No | ✅ **`--check` & `--format markdown`** |
-| **Official GitHub Action & Annotations** | ❌ No | ⚠️ Custom setup | ❌ No | ✅ **`uses: pgold30/janos@master`** |
-| **Pre-commit Hooks** | ❌ No | ❌ No | ❌ No | ✅ **`.pre-commit-hooks.yaml` included** |
-| **Zero-Install (`npx`)** | ❌ (Separate binary) | ❌ (Separate binary) | ❌ (Separate Go install) | ✅ **Instant via `npx janos`** |
+| Core Capability | Pluto (Fairwinds) | `kubectl-convert` (Official) | **Janos 2.2** |
+| :--- | :---: | :---: | :---: |
+| **Fixes manifests in-place?** | ❌ No (Read-only auditor) | ❌ No (Single file to stdout) | ✅ **Yes, recursive directory updates** |
+| **Preserves YAML comments?** | N/A (Doesn't modify files) | ❌ **Strips 100% of comments** | ✅ **100% Preserved (AST engine)** |
+| **Live Cluster & Helm Audit?** | ✅ Yes (Helm & cluster read-only) | ❌ No | ✅ **Yes (`--cluster`, `--chart`, unrendered templates)** |
+| **Target Version Gating?** | ⚠️ Filter only | ❌ No (Forces latest API, breaking staged upgrades) | ✅ **`--target-version <v>` safe incremental upgrades** |
+| **Ingress ➔ Gateway API?** | ❌ No | ❌ No | ✅ **Built-in (`--ingress-to-gateway`)** |
 
 ---
 
 ## ⚡ Highlights
 
 - 🛡️ **Preserves Comments & AST**: Full AST-aware engine retaining header comments, inline comments, anchors, and blank lines.
+- 🌐 **Live Cluster Auditing**: `--cluster` / `--live`: Connect directly to active Kubernetes clusters via `kubectl` to audit running workloads without installing in-cluster agents.
+- 💬 **Interactive Confirmation Mode**: `-i` / `--interactive`: Review each file change individually with `[y/n/d/a/q]` confirmation prompts (like `git add -p`).
+- 🚨 **Status Severity Tagging**: Clearly distinguishes between `🔴 REMOVED` (hard broken) and `🟡 DEPRECATED` APIs in terminal tables, Markdown reports, and JSON.
 - 🎯 **Target Version Gating**: `--target-version 1.25`: Only apply deprecations up to your cluster's target version, leaving future removals untouched.
 - 📊 **Pluto-Style Read-Only Audit**: `--audit` / `--scan`: Instant overview table of all deprecated APIs across your repo without touching files.
 - ⛔ **Filter Removed APIs**: `--only-removed`: Focus exclusively on APIs that are completely removed and broken in your target Kubernetes release.
@@ -68,22 +63,28 @@
 Run instantly without cloning or installing:
 
 ```sh
-# 1. Pluto-style read-only deprecation audit:
+# 1. Audit a running Kubernetes cluster directly via kubectl:
+npx janos --cluster --audit
+
+# 2. Pluto-style read-only deprecation audit of a directory:
 npx janos --audit -d ./k8s-manifests
 
-# 2. Focus only on APIs that are completely removed in Kubernetes 1.25:
+# 3. Focus only on APIs that are completely removed in Kubernetes 1.25:
 npx janos --audit -d ./k8s-manifests --target-version 1.25 --only-removed
 
-# 3. Preview changes with colorized diff:
+# 4. Preview changes with colorized diff:
 npx janos -d ./k8s-manifests --dry-run --diff
 
-# 4. Gate migration up to Kubernetes 1.25 only:
+# 5. Migrate manifests with interactive per-file confirmation (y/n/d/a/q):
+npx janos -d ./k8s-manifests -i
+
+# 6. Gate migration up to Kubernetes 1.25 only:
 npx janos -d ./k8s-manifests --target-version 1.25
 
-# 5. Audit a Helm chart directory:
+# 7. Audit a Helm chart directory:
 npx janos --chart ./charts/my-app --audit
 
-# 6. Convert Ingress manifests to Gateway API HTTPRoutes:
+# 8. Convert Ingress manifests to Gateway API HTTPRoutes:
 npx janos --ingress-to-gateway -f ingress.yaml
 ```
 
@@ -99,6 +100,7 @@ Usage:
 Core Options:
   -f, --file <file>             Target single manifest file to convert ('-' for stdin)
   -d, --dir <dir>               Target directory to recursively scan and convert
+  -i, --interactive             Interactive mode: confirm each file modification (y/n/d/a/q)
       --stdin                   Read manifests from standard input (pipe)
   -n, --dry-run                 Preview changes without modifying files
       --diff                    Show unified color diff of changes
@@ -116,7 +118,10 @@ Advanced Options:
       --ignore <patterns>       Comma-separated glob ignore patterns (or use .janosignore)
       --annotations             Emit GitHub Actions workflow annotations (auto in CI)
 
-Helm Options:
+Cluster & Helm Options:
+      --cluster, --live         Audit running Kubernetes cluster directly via kubectl
+      --namespace <ns>          Namespace filter for live cluster audit (default: all namespaces)
+      --kubeconfig <file>       Custom kubeconfig file path
       --chart, --helm <dir>     Scan or render Helm chart directory via 'helm template'
       --values <file>           Specify values YAML file for Helm chart rendering
 
@@ -130,7 +135,23 @@ General:
 
 ## 📖 Step-by-Step Guide & Recipes (How to Use)
 
-### Scenario 1: Auditing your GitOps repository before a cluster upgrade
+### Scenario 1: Auditing a running Kubernetes cluster (`--cluster`)
+Want to check if your active production or staging cluster is running deprecated APIs before an EKS/GKE control-plane upgrade? Janos queries `kubectl` directly without installing any in-cluster agent:
+```sh
+# Audit all namespaces in the current cluster context:
+npx janos --cluster --audit
+
+# Filter to a specific namespace:
+npx janos --cluster --namespace kube-system --audit
+
+# Only show APIs that are completely removed in Kubernetes 1.25:
+npx janos --cluster --audit --target-version 1.25 --only-removed
+
+# Preview the exact migration diff of cluster workloads:
+npx janos --cluster --diff
+```
+
+### Scenario 2: Auditing your GitOps repository before an upgrade
 Want to see every deprecated or removed API across your repository without modifying a single file?
 ```sh
 # Audit all manifests in your repository:
@@ -143,7 +164,20 @@ npx janos --audit -d ./k8s --target-version 1.25 --only-removed
 npx janos --audit -d ./k8s --format markdown --output-file audit-report.md
 ```
 
-### Scenario 2: Previewing and applying migrations in-place
+### Scenario 3: Interactive migration with confirmation (`-i`)
+Just like `git add -p`, review and confirm each file modification individually:
+```sh
+npx janos -d ./k8s -i
+```
+Janos prompts for each modified file:
+`Apply changes to k8s/cronjob.yaml? [y/n/d/a/q]`
+- `y`: accept and migrate this file
+- `n`: skip this file
+- `d`: show unified color diff for this file and re-prompt
+- `a`: accept this file and all remaining files
+- `q`: quit immediately, leaving remaining files untouched
+
+### Scenario 4: Previewing and applying migrations in-place
 Never upgrade code blindly. Preview color-coded unified diffs first, then apply in-place:
 ```sh
 # Step 1: Preview changes with colored diff without touching files:
@@ -156,7 +190,7 @@ npx janos -d ./k8s --target-version 1.25 --diff
 npx janos -d ./k8s
 ```
 
-### Scenario 3: Working with Helm Charts & Templates
+### Scenario 5: Working with Helm Charts & Templates
 Janos provides first-class support for Helm:
 ```sh
 # A. Render and audit a Helm chart directory:
@@ -169,7 +203,7 @@ npx janos --chart ./charts/my-app --values ./values-prod.yaml --audit --format m
 npx janos -d ./charts/my-app/templates
 ```
 
-### Scenario 4: Unix Piping with Helm & Kustomize
+### Scenario 6: Unix Piping with Helm & Kustomize
 Janos treats standard input (`-`) as a first-class stream:
 ```sh
 # Pipe Helm rendered output into Janos:
@@ -182,7 +216,7 @@ kustomize build overlays/production | npx janos - --diff
 cat legacy-deploy.yaml | npx janos - > modern-deploy.yaml
 ```
 
-### Scenario 5: Migrating Ingress to Gateway API (HTTPRoute)
+### Scenario 7: Migrating Ingress to Gateway API (HTTPRoute)
 Transition seamlessly from legacy Ingress to the modern Kubernetes Gateway API:
 ```sh
 # Generate HTTPRoute alongside your Ingress:
@@ -219,10 +253,10 @@ janos --audit -d ./k8s --format json
 
 Example Markdown Report generated by Janos:
 
-| Kind | Name | Namespace | Current API | Target API | Removed In | File |
-| :--- | :--- | :--- | :--- | :--- | :---: | :--- |
-| Ingress | `web-ingress` | `default` | `extensions/v1beta1` | **`networking.k8s.io/v1`** | **v1.22** | `k8s/ingress.yaml` |
-| CronJob | `cleanup` | `prod` | `batch/v1beta1` | **`batch/v1`** | **v1.25** | `k8s/cron.yaml` |
+| Kind | Name | Namespace | Current API | Target API | Removed In | Status | File |
+| :--- | :--- | :--- | :--- | :--- | :---: | :---: | :--- |
+| Ingress | `web-ingress` | `default` | `extensions/v1beta1` | **`networking.k8s.io/v1`** | **v1.22** | 🔴 REMOVED | `k8s/ingress.yaml` |
+| CronJob | `cleanup` | `prod` | `batch/v1beta1` | **`batch/v1`** | **v1.25** | 🟡 DEPRECATED | `k8s/cron.yaml` |
 
 ### 3. Ingress to Gateway API Migration (`--ingress-to-gateway`)
 With the retirement of `ingress-nginx` and the rise of the **Kubernetes Gateway API**, migrating from Ingress to `HTTPRoute` is the new cloud-native standard.

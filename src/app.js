@@ -21,6 +21,7 @@ const migration = require('./migration');
 const cli = require('./cli');
 const audit = require('./audit');
 const helm = require('./helm');
+const cluster = require('./cluster');
 const { convertIngressToGateway } = require('./gateway');
 
 function loadIgnorePatterns(targetDir, extraIgnore) {
@@ -153,15 +154,22 @@ function convertFile(filePath, options = {}) {
     if (helm.isHelmTemplate(originalContent)) {
       const res = helm.migrateHelmTemplate(originalContent, options);
       if (res.changed) {
-        if (options.diff) {
+        if (options.diff && !options.interactive) {
           const diff = createUnifiedDiff(originalContent, res.content, filePath);
           if (diff) console.log(diff + '\n');
         }
-        if (!options.dryRun && !options.check) {
+        if (!options.dryRun && !options.check && !options.interactive) {
           fs.writeFileSync(filePath, res.content, 'utf8');
         }
       }
-      return { filePath, changed: res.changed, events: res.events, error: null };
+      return {
+        filePath,
+        changed: res.changed,
+        events: res.events,
+        newContent: res.content,
+        originalContent,
+        error: null,
+      };
     }
 
     let docs;
@@ -170,13 +178,20 @@ function convertFile(filePath, options = {}) {
     } catch (parseErr) {
       if (helm.isHelmTemplate(originalContent) || filePath.endsWith('.tpl')) {
         const res = helm.migrateHelmTemplate(originalContent, options);
-        return { filePath, changed: res.changed, events: res.events, error: null };
+        return {
+          filePath,
+          changed: res.changed,
+          events: res.events,
+          newContent: res.content,
+          originalContent,
+          error: null,
+        };
       }
       throw parseErr;
     }
 
     if (!docs || docs.length === 0) {
-      return { filePath, changed: false, events: [], error: null };
+      return { filePath, changed: false, events: [], newContent: originalContent, originalContent, error: null };
     }
 
     // Ingress to Gateway API mode
@@ -195,7 +210,7 @@ function convertFile(filePath, options = {}) {
       if (generated.length > 0) {
         const newContent = yaml.dumpDocuments(generated);
         const targetOut = options.out || filePath.replace(/\.ya?ml$/, '.gateway.yaml');
-        if (!options.dryRun) {
+        if (!options.dryRun && !options.interactive) {
           fs.writeFileSync(targetOut, newContent, 'utf8');
         }
         return {
@@ -203,10 +218,12 @@ function convertFile(filePath, options = {}) {
           outPath: targetOut,
           changed: true,
           events: [{ type: 'migrated', message: `Converted Ingress to Gateway API -> ${targetOut}` }],
+          newContent,
+          originalContent,
           error: null,
         };
       }
-      return { filePath, changed: false, events: [], error: null };
+      return { filePath, changed: false, events: [], newContent: originalContent, originalContent, error: null };
     }
 
     const migratedDocs = migration.parseDocs(docs, {
@@ -218,21 +235,21 @@ function convertFile(filePath, options = {}) {
     const changed = originalContent.trim() !== newContent.trim();
 
     if (changed) {
-      if (options.diff) {
+      if (options.diff && !options.interactive) {
         const diff = createUnifiedDiff(originalContent, newContent, filePath);
         if (diff) {
           console.log(diff + '\n');
         }
       }
 
-      if (!options.dryRun && !options.check) {
+      if (!options.dryRun && !options.check && !options.interactive) {
         fs.writeFileSync(filePath, newContent, 'utf8');
       }
     }
 
-    return { filePath, changed, events, error: null };
+    return { filePath, changed, events, newContent, originalContent, error: null };
   } catch (err) {
-    return { filePath, changed: false, events, error: err };
+    return { filePath, changed: false, events: [], error: err };
   }
 }
 
@@ -410,10 +427,121 @@ function handleHelmChart(args) {
   }
 }
 
-function main(argv) {
+function handleCluster(args) {
+  if (!cluster.isKubectlInstalled()) {
+    console.error('\x1b[31mError:\x1b[0m "kubectl" CLI not found in PATH. Install kubectl (https://kubernetes.io/docs/tasks/tools/) to query active clusters.');
+    process.exitCode = 1;
+    return;
+  }
+
+  if (!args.quiet && args.format !== 'json') {
+    const nsMsg = args.namespace ? `in namespace "${args.namespace}"` : 'across all namespaces';
+    console.error(`Connecting to Kubernetes cluster via kubectl (${nsMsg})...`);
+  }
+
+  let liveYaml;
+  try {
+    liveYaml = cluster.fetchClusterManifests(args);
+  } catch (err) {
+    console.error(`\x1b[31mError querying cluster:\x1b[0m ${err.message}`);
+    process.exitCode = 1;
+    return;
+  }
+
+  // By default in cluster mode, perform audit unless --diff or --out is explicitly requested
+  if (args.audit || (!args.diff && !args.out)) {
+    const auditRes = audit.auditContent(liveYaml, 'Live Cluster', args);
+    const report = {
+      filesScanned: 1,
+      documentsScanned: auditRes.documentsScanned,
+      deprecatedCount: auditRes.items.length,
+      items: auditRes.items,
+    };
+    const output = audit.formatReport(report, args.format);
+    if (args.outputFile) {
+      fs.writeFileSync(args.outputFile, output, 'utf8');
+      if (!args.quiet) console.error(`Audit report written to: ${args.outputFile}`);
+    } else {
+      console.log(output);
+    }
+
+    if (args.annotations && args.format !== 'json') {
+      const annotations = audit.formatGitHubAnnotations(report);
+      if (annotations) console.log(annotations);
+    }
+
+    if (process.env.GITHUB_STEP_SUMMARY && (args.format === 'markdown' || args.format === 'md')) {
+      try {
+        fs.appendFileSync(process.env.GITHUB_STEP_SUMMARY, output + '\n');
+      } catch {}
+    }
+
+    if (args.check && report.deprecatedCount > 0) {
+      process.exitCode = 1;
+    }
+    return;
+  }
+
+  const docs = yaml.parseDocuments(liveYaml);
+  const events = [];
+  const reporter = (e) => events.push(e);
+  const migratedDocs = migration.parseDocs(docs, {
+    reporter,
+    targetVersion: args.targetVersion,
+  });
+  const newContent = yaml.dumpDocuments(migratedDocs);
+
+  if (args.diff) {
+    const diff = createUnifiedDiff(liveYaml, newContent, 'Live Cluster');
+    if (diff) console.log(diff);
+    if (args.check && liveYaml.trim() !== newContent.trim()) {
+      process.exitCode = 1;
+    }
+    return;
+  }
+
+  if (args.out) {
+    fs.writeFileSync(args.out, newContent, 'utf8');
+    if (!args.quiet) console.error(`Migrated cluster manifests saved to: ${args.out}`);
+  } else {
+    process.stdout.write(newContent);
+  }
+}
+
+function promptSync(question) {
+  process.stdout.write(question);
+  let fd;
+  try {
+    fd = fs.openSync('/dev/tty', 'r');
+  } catch {
+    return 'y';
+  }
+  const buf = Buffer.alloc(1024);
+  let bytesRead = 0;
+  try {
+    bytesRead = fs.readSync(fd, buf, 0, 1024, null);
+  } catch {
+    return 'y';
+  } finally {
+    try { fs.closeSync(fd); } catch {}
+  }
+  return buf.toString('utf8', 0, bytesRead).trim().toLowerCase();
+}
+
+function askConfirmation(filePath, diffFn, options = {}) {
+  if (typeof options.prompter === 'function') {
+    return options.prompter(filePath, diffFn);
+  }
+  if (!process.stdin.isTTY) {
+    return 'y';
+  }
+  return promptSync(`Apply changes to ${path.relative(process.cwd(), filePath) || filePath}? [y/n/d/a/q] (default: y): `);
+}
+
+function main(argv, overrides = {}) {
   let args;
   try {
-    args = cli.parseArgs(argv);
+    args = Object.assign(cli.parseArgs(argv), overrides);
   } catch (e) {
     console.error(`\x1b[31mError:\x1b[0m ${e.message}`);
     console.log(cli.getHelpText());
@@ -443,8 +571,14 @@ function main(argv) {
     return;
   }
 
+  // 3. Live Cluster Mode
+  if (args.cluster || args.live) {
+    handleCluster(args);
+    return;
+  }
+
   if (!args.file && !args.dir) {
-    console.error('\x1b[31mError:\x1b[0m argument -d, -f, --chart, or STDIN must be provided.');
+    console.error('\x1b[31mError:\x1b[0m argument -d, -f, --chart, --cluster, or STDIN must be provided.');
     console.log(cli.getHelpText());
     process.exitCode = 1;
     return;
@@ -514,8 +648,11 @@ function main(argv) {
 
   let changedCount = 0;
   const warnings = [];
+  let applyAll = false;
+  let aborted = false;
 
   for (const file of filesToProcess) {
+    if (aborted) break;
     const res = convertFile(file, args);
 
     if (res.error) {
@@ -533,13 +670,62 @@ function main(argv) {
     }
 
     if (res.changed) {
-      changedCount++;
-      if (!args.quiet) {
-        const actionLabel = args.check || args.dryRun ? 'Needs migration' : 'Converted';
-        console.log(`\x1b[33m•\x1b[0m ${actionLabel}: ${file}`);
-        for (const ev of res.events) {
-          if (ev.message && ev.type !== 'warning') {
-            console.log(`    ↳ ${ev.message}`);
+      if (args.interactive && !args.dryRun && !args.check) {
+        let shouldWrite = applyAll;
+        if (!applyAll) {
+          const rel = path.relative(process.cwd(), file) || file;
+          let answered = false;
+          while (!answered) {
+            const promptDiff = () => createUnifiedDiff(res.originalContent, res.newContent, rel);
+            const rawAns = askConfirmation(file, promptDiff, args);
+            const ans = (rawAns || 'y').trim().toLowerCase();
+            if (ans === 'y' || ans === 'yes' || ans === '') {
+              shouldWrite = true;
+              answered = true;
+            } else if (ans === 'n' || ans === 'no') {
+              shouldWrite = false;
+              answered = true;
+              if (!args.quiet) console.log(`  \x1b[90m• Skipped: ${file}\x1b[0m`);
+            } else if (ans === 'd' || ans === 'diff') {
+              const diffStr = promptDiff();
+              if (diffStr) console.log('\n' + diffStr + '\n');
+              else console.log('\n(No visual diff)\n');
+            } else if (ans === 'a' || ans === 'all') {
+              applyAll = true;
+              shouldWrite = true;
+              answered = true;
+            } else if (ans === 'q' || ans === 'quit') {
+              if (!args.quiet) console.log('\n\x1b[33mMigration aborted by user.\x1b[0m');
+              aborted = true;
+              break;
+            } else {
+              console.log('Please choose: [y]es, [n]o, [d]iff, [a]ll, or [q]uit.');
+            }
+          }
+        }
+        if (aborted) break;
+
+        if (shouldWrite) {
+          fs.writeFileSync(file, res.newContent, 'utf8');
+          changedCount++;
+          if (!args.quiet) {
+            console.log(`\x1b[33m•\x1b[0m Converted: ${file}`);
+            for (const ev of res.events) {
+              if (ev.message && ev.type !== 'warning') {
+                console.log(`    ↳ ${ev.message}`);
+              }
+            }
+          }
+        }
+      } else {
+        changedCount++;
+        if (!args.quiet) {
+          const actionLabel = args.check || args.dryRun ? 'Needs migration' : 'Converted';
+          console.log(`\x1b[33m•\x1b[0m ${actionLabel}: ${file}`);
+          for (const ev of res.events) {
+            if (ev.message && ev.type !== 'warning') {
+              console.log(`    ↳ ${ev.message}`);
+            }
           }
         }
       }
@@ -581,4 +767,6 @@ module.exports = {
   createUnifiedDiff,
   handleStdin,
   handleHelmChart,
+  handleCluster,
+  askConfirmation,
 };

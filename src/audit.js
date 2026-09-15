@@ -16,7 +16,7 @@
 const fs = require('fs');
 const path = require('path');
 const yaml = require('./yaml');
-const { normalizeKind, getRemovalVersion, MIGRATION_RULES } = require('./migration');
+const { normalizeKind, getRemovalVersion, parseVersionNum, MIGRATION_RULES } = require('./migration');
 
 const helm = require('./helm');
 
@@ -24,13 +24,6 @@ function toJS(doc) {
   if (!doc) return doc;
   if (typeof doc.toJS === 'function') return doc.toJS();
   return doc;
-}
-
-function parseVersionNum(vStr) {
-  if (!vStr) return 999;
-  const match = String(vStr).replace(/^v/, '').match(/^(\d+)\.(\d+)/);
-  if (!match) return 999;
-  return parseInt(match[1], 10) * 100 + parseInt(match[2], 10);
 }
 
 function filterRemovedItems(items, options = {}) {
@@ -57,7 +50,7 @@ function auditContent(content, sourceName = 'STDIN', options = {}) {
   let documentsScanned = 0;
 
   if (helm.isHelmTemplate(content)) {
-    const templateItems = filterRemovedItems(helm.auditHelmTemplate(content, sourceName), options);
+    const templateItems = filterRemovedItems(helm.auditHelmTemplate(content, sourceName, options), options);
     return {
       documentsScanned: templateItems.length > 0 ? templateItems.length : 1,
       items: templateItems,
@@ -69,7 +62,7 @@ function auditContent(content, sourceName = 'STDIN', options = {}) {
     docs = yaml.parseDocuments(content);
   } catch {
     // If regular YAML parsing fails, try line-based Helm template audit as fallback
-    const fallbackItems = filterRemovedItems(helm.auditHelmTemplate(content, sourceName), options);
+    const fallbackItems = filterRemovedItems(helm.auditHelmTemplate(content, sourceName, options), options);
     return {
       documentsScanned: fallbackItems.length > 0 ? fallbackItems.length : 1,
       items: fallbackItems,
@@ -97,6 +90,12 @@ function auditContent(content, sourceName = 'STDIN', options = {}) {
     const rule = MIGRATION_RULES[kind];
     if (rule && rule.legacy.includes(apiVersion)) {
       const removedIn = getRemovalVersion(kind, apiVersion);
+      const remVer = parseVersionNum(removedIn);
+      const targetVer = options.targetVersion
+        ? parseVersionNum(options.targetVersion)
+        : parseVersionNum('1.32');
+      const status = remVer <= targetVer ? 'REMOVED' : 'DEPRECATED';
+
       items.push({
         kind,
         name,
@@ -104,6 +103,7 @@ function auditContent(content, sourceName = 'STDIN', options = {}) {
         currentApi: apiVersion,
         targetApi: rule.target,
         removedIn: `v${removedIn}`,
+        status,
         file: sourceName,
         warning: rule.warning || null,
       });
@@ -151,14 +151,15 @@ function formatAsciiTable(report) {
     return '✔ No deprecated Kubernetes APIs detected across scanned files.';
   }
 
-  const headers = ['Kind', 'Name', 'Current API', 'Target API', 'Removed In', 'File'];
+  const headers = ['Kind', 'Name', 'Current API', 'Target API', 'Removed In', 'Status', 'File'];
   const rows = report.items.map((i) => [
     i.kind,
     i.name.length > 25 ? i.name.slice(0, 22) + '...' : i.name,
     i.currentApi,
     i.targetApi,
     i.removedIn,
-    i.file.length > 35 ? '...' + i.file.slice(-32) : i.file,
+    i.status || 'REMOVED',
+    i.file.length > 30 ? '...' + i.file.slice(-27) : i.file,
   ]);
 
   const colWidths = headers.map((h, idx) =>
@@ -204,13 +205,14 @@ function formatMarkdownTable(report) {
     '',
     `> ⚠️ **${report.deprecatedCount} deprecated API version(s)** detected across **${report.filesScanned}** scanned files.`,
     '',
-    '| Kind | Name | Namespace | Current API | Target API | Removed In | File |',
-    '| :--- | :--- | :--- | :--- | :--- | :---: | :--- |',
+    '| Kind | Name | Namespace | Current API | Target API | Removed In | Status | File |',
+    '| :--- | :--- | :--- | :--- | :--- | :---: | :---: | :--- |',
   ];
 
   for (const item of report.items) {
+    const statusBadge = item.status === 'REMOVED' ? '🔴 REMOVED' : '🟡 DEPRECATED';
     lines.push(
-      `| ${item.kind} | \`${item.name}\` | \`${item.namespace}\` | \`${item.currentApi}\` | **\`${item.targetApi}\`** | **${item.removedIn}** | \`${item.file}\` |`,
+      `| ${item.kind} | \`${item.name}\` | \`${item.namespace}\` | \`${item.currentApi}\` | **\`${item.targetApi}\`** | **${item.removedIn}** | ${statusBadge} | \`${item.file}\` |`,
     );
   }
 

@@ -16,7 +16,7 @@
 const { execSync } = require('child_process');
 const fs = require('fs');
 const path = require('path');
-const { MIGRATION_RULES, normalizeKind, getRemovalVersion } = require('./migration');
+const { MIGRATION_RULES, normalizeKind, getRemovalVersion, parseVersionNum } = require('./migration');
 
 /**
  * Checks if a directory is a Helm chart (contains Chart.yaml or Chart.yml).
@@ -94,7 +94,7 @@ function isHelmTemplate(content) {
  * @param {string} [filePath]
  * @returns {Array<Object>} Deprecated items found
  */
-function auditHelmTemplate(content, filePath = 'template.yaml') {
+function auditHelmTemplate(content, filePath = 'template.yaml', options = {}) {
   const lines = content.split(/\r?\n/);
   const items = [];
 
@@ -107,6 +107,12 @@ function auditHelmTemplate(content, filePath = 'template.yaml') {
       const rule = MIGRATION_RULES[currentKind];
       if (rule.legacy.includes(currentApi)) {
         const removedIn = getRemovalVersion(currentKind, currentApi);
+        const remVer = parseVersionNum(removedIn);
+        const targetVer = options.targetVersion
+          ? parseVersionNum(options.targetVersion)
+          : parseVersionNum('1.32');
+        const status = remVer <= targetVer ? 'REMOVED' : 'DEPRECATED';
+
         items.push({
           kind: currentKind,
           name: currentName,
@@ -114,6 +120,7 @@ function auditHelmTemplate(content, filePath = 'template.yaml') {
           currentApi,
           targetApi: rule.target,
           removedIn: `v${removedIn}`,
+          status,
           file: filePath,
           warning: rule.warning || null,
           isHelmTemplate: true,
