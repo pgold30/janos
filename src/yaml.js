@@ -1,6 +1,5 @@
 /**
  * Copyright 2021-2026, Pablo Loschi
- * Copyright 2026, Pablo Loschi
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
@@ -29,16 +28,16 @@ function dumpDocuments(docs) {
   return docs
     .map((doc, idx) => {
       if (!doc) return '';
-      if (typeof doc.toString === 'function') {
-        const str = doc.toString();
-        // If it's a subsequent doc and doesn't already start with '---', prefix it
-        if (idx > 0 && !str.startsWith('---')) {
-          return '---\n' + str;
-        }
-        return str;
+      let str;
+      if (YAML.isDocument(doc)) {
+        str = doc.toString();
+      } else {
+        str = YAML.stringify(doc);
       }
-      const dumped = YAML.stringify(doc);
-      return (idx > 0 ? '---\n' : '') + dumped;
+      if (idx > 0 && !str.startsWith('---')) {
+        return '---\n' + str;
+      }
+      return str;
     })
     .join('');
 }

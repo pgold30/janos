@@ -4,9 +4,9 @@
 
 # Janos
 
-**The Automated Kubernetes Manifest Migration Tool**
+**The Automated Kubernetes Manifest Migration & Gateway API Transition Tool**
 
-*Effortlessly upgrade your Kubernetes manifests from version 1.16 to 1.32+ while keeping your YAML comments and formatting intact.*
+*Effortlessly upgrade your Kubernetes manifests from version 1.16 to 1.32+, audit deprecated APIs, and convert Ingress to Gateway API while keeping your YAML comments and formatting intact.*
 
 [![CI](https://github.com/pgold30/janos/actions/workflows/ci.yml/badge.svg)](https://github.com/pgold30/janos/actions/workflows/ci.yml)
 [![Node.js](https://img.shields.io/badge/node-%3E%3D18.0.0-brightgreen.svg)](https://nodejs.org/)
@@ -23,7 +23,7 @@
 >
 > When upgrading Kubernetes clusters, deprecated and removed APIs inevitably break deployments. Running manual find-and-replace across hundreds of GitOps repositories or Helm-free manifests is tedious, error-prone, and destroys your comments.
 >
-> **Janos bridges the gap**: it scans your manifests, updates deprecated `apiVersion`s, performs deep structural schema translations, and writes the upgraded files back — **without stripping a single comment or reformating your whitespace**.
+> **Janos bridges the gap**: it audits and scans your manifests (like Pluto), updates deprecated `apiVersion`s in-place with target version gating (like `kubectl-convert`), converts Ingresses to modern Gateway API `HTTPRoute`s (like `ingress2gateway`), and writes upgraded files back — **without stripping a single comment or reformatting your whitespace**.
 
 ---
 
@@ -32,11 +32,13 @@
 | Feature | Description |
 | :--- | :--- |
 | 🛡️ **Preserves Comments & AST** | Full AST-aware engine retaining header comments, inline comments, anchors, and blank lines. |
+| 🎯 **Target Version Gating** | `--target-version 1.25`: Only apply deprecations up to your cluster's target version, leaving future removals untouched. |
+| 📊 **Pluto-Style Read-Only Audit** | `--audit` / `--scan`: Instant overview table of all deprecated APIs across your repo without touching files. |
+| 📝 **PR-Ready Markdown Reports** | `--format markdown`: Generate GitHub Actions-ready summary tables to post directly as PR comments. |
+| 🌉 **Ingress to Gateway API** | `--ingress-to-gateway`: Translate legacy Ingress manifests into modern Kubernetes Gateway API `HTTPRoute` and `Gateway` resources. |
 | 🔎 **Safe Preview & Color Diff** | `--dry-run` and `--diff` provide instant, color-coded unified diffs without modifying files. |
-| 🚦 **CI / CD Pipeline Ready** | `--check` flag exits `1` when outdated manifests exist, `0` when clean. Ideal for PR gates. |
-| ⚙️ **Deep Schema Migrations** | Automatically migrates Ingress `backend` (`serviceName`/`servicePort` to modern `service`), adds missing `spec.selector`s for Deployments, and updates HPA `autoscaling/v2` metrics. |
+| 🚦 **CI / CD Pipeline Gate** | `--check` flag exits `1` when outdated manifests exist, `0` when clean. Ideal for PR gates. |
 | 🚀 **Zero-Install Execution** | Run immediately anywhere with `npx janos` or use the official Docker image. |
-| 🌐 **Comprehensive Coverage** | Handles Kubernetes deprecations from **v1.16 up through v1.32+**. |
 
 ---
 
@@ -45,71 +47,97 @@
 Run instantly without cloning or installing:
 
 ```sh
-# Preview changes in a folder with colorized diff:
+# Pluto-style read-only audit:
+npx janos --audit -d ./k8s-manifests
+
+# Preview changes with colorized diff:
 npx janos -d ./k8s-manifests --dry-run --diff
 
-# Apply changes in-place:
-npx janos -d ./k8s-manifests
+# Gate migration up to Kubernetes 1.25 only:
+npx janos -d ./k8s-manifests --target-version 1.25
+
+# Convert Ingress manifests to Gateway API HTTPRoutes:
+npx janos --ingress-to-gateway -d ./k8s-manifests
 ```
 
 ---
 
-## 📦 Installation Options
-
-### Global npm CLI
-```sh
-npm install -g janos
-janos --help
-```
-
-### Docker
-```sh
-# Build local container
-make build
-
-# Run against current directory
-./janos.sh -d ./manifests --diff
-```
-
----
-
-## 🛠️ CLI Usage & Flags
+## 🛠️ CLI Usage & Options
 
 ```text
 Usage:
   janos [options] [path]
 
-Options:
-  -f, --file <file>     Target single manifest file to convert
-  -d, --dir <dir>       Target directory to recursively scan and convert
-  -n, --dry-run         Preview changes without modifying files
-      --diff            Show unified diff of changes
-  -c, --check           CI mode: exit 1 if any files need migration, 0 if clean
-  -q, --quiet           Suppress non-essential output
-  -v, --version         Print version information
-  -h, --help            Print this help message
+Core Options:
+  -f, --file <file>             Target single manifest file to convert
+  -d, --dir <dir>               Target directory to recursively scan and convert
+  -n, --dry-run                 Preview changes without modifying files
+      --diff                    Show unified color diff of changes
+  -c, --check                   CI mode: exit 1 if any files need migration, 0 if clean
+
+Advanced Options:
+      --target-version <ver>    Gate migrations up to a specific Kubernetes version (e.g. 1.25)
+      --audit, --scan           Pluto-style read-only audit: scan and print summary table
+      --format <format>         Output format: table (default), markdown, or json
+      --ingress-to-gateway      Translate Ingress manifests to Gateway API (HTTPRoute)
+      --generate-gateway        Generate companion Gateway resource with --ingress-to-gateway
+      --out <file>              Output file path for generated resources (default: alongside or stdout)
+
+General:
+  -q, --quiet                   Suppress non-essential output
+  -v, --version                 Print version information
+  -h, --help                    Print this help message
 ```
 
-### Common Workflows
+---
 
-#### 1. Convert a single file
+## 💡 Advanced Features & Workflows
+
+### 1. Target Version Gating (`--target-version`)
+Upgrading from 1.21 to 1.25? Don't prematurely apply 1.26 or 1.29 changes (such as HPA v2beta2 removals or FlowControl v1). Janos lets you gate migrations strictly to your target version:
+
 ```sh
-janos -f deployment.yaml
+janos -d ./k8s-manifests --target-version 1.25 --diff
 ```
 
-#### 2. Convert an entire GitOps repository
+### 2. Pluto-Style Audit & PR Markdown Comments (`--audit --format markdown`)
+Generate clean reports for developers or automated CI pull request checks:
+
 ```sh
-janos -d ./gitops/apps
+# Terminal ASCII table:
+janos --audit -d ./k8s
+
+# Markdown output for GitHub Actions / GitLab CI:
+janos --audit -d ./k8s --format markdown
+
+# JSON output for programmatic pipelines:
+janos --audit -d ./k8s --format json
 ```
 
-#### 3. Inspect before applying (Dry-Run + Diff)
-```sh
-janos -d ./k8s-manifests --dry-run --diff
-```
+Example Markdown Report generated by Janos:
 
-#### 4. Automated CI Pull Request Check
+| Kind | Name | Namespace | Current API | Target API | Removed In | File |
+| :--- | :--- | :--- | :--- | :--- | :---: | :--- |
+| Ingress | `web-ingress` | `default` | `extensions/v1beta1` | **`networking.k8s.io/v1`** | **v1.22** | `k8s/ingress.yaml` |
+| CronJob | `cleanup` | `prod` | `batch/v1beta1` | **`batch/v1`** | **v1.25** | `k8s/cron.yaml` |
+
+### 3. Ingress to Gateway API Migration (`--ingress-to-gateway`)
+With the retirement of `ingress-nginx` and the rise of the **Kubernetes Gateway API**, migrating from Ingress to `HTTPRoute` is the new cloud-native standard.
+
+Janos automatically transforms your Ingress into Gateway API resources:
+- Translates `spec.rules[*].host` to `HTTPRoute.spec.hostnames`.
+- Translates `paths` into `HTTPRoute.spec.rules[*].matches.path` (`PathPrefix` or `Exact`).
+- Translates `serviceName`/`servicePort` to `backendRefs`.
+- Maps Ingress class to `parentRefs`.
+- Translates rewrite annotations (`nginx.ingress.kubernetes.io/rewrite-target`) into `URLRewrite` filters.
+- Generates companion `Gateway` with HTTP (port 80) and HTTPS/TLS (port 443) listeners with `--generate-gateway`.
+
 ```sh
-janos --check ./k8s-manifests
+# Generate HTTPRoute alongside your Ingress:
+janos --ingress-to-gateway -f ingress.yaml
+
+# Generate HTTPRoute and companion Gateway resource:
+janos --ingress-to-gateway --generate-gateway -f ingress.yaml --out gateway-resources.yaml
 ```
 
 ---
@@ -125,7 +153,7 @@ janos --check ./k8s-manifests
 | **NetworkPolicy** | `extensions/v1beta1` | `networking.k8s.io/v1` | 1.16 | API version update |
 | **Role / ClusterRole** | `rbac.authorization.k8s.io/v1alpha1`, `v1beta1` | `rbac.authorization.k8s.io/v1` | 1.17 / 1.22 | Full RBAC v1 migration |
 | **RoleBinding / ClusterRoleBinding** | `rbac.authorization.k8s.io/v1alpha1`, `v1beta1` | `rbac.authorization.k8s.io/v1` | 1.17 / 1.22 | Full RBAC v1 migration |
-| **Ingress** | `extensions/v1beta1`, `networking.k8s.io/v1beta1` | `networking.k8s.io/v1` | 1.22 | Migrates `spec.backend` to `defaultBackend`, converts `serviceName`/`servicePort` to `service.name`/`port`, adds `pathType: Prefix` |
+| **Ingress** | `extensions/v1beta1`, `networking.k8s.io/v1beta1` | `networking.k8s.io/v1` | 1.22 | Migrates `spec.backend` to `defaultBackend`, converts `serviceName`/`servicePort` to `service.name`/`port`, adds `pathType: Prefix` (or convert to Gateway API with `--ingress-to-gateway`) |
 | **IngressClass** | `networking.k8s.io/v1beta1` | `networking.k8s.io/v1` | 1.22 | API version update |
 | **CustomResourceDefinition** | `apiextensions.k8s.io/v1beta1` | `apiextensions.k8s.io/v1` | 1.22 | API version update |
 | **ValidatingWebhookConfiguration** | `admissionregistration.k8s.io/v1beta1` | `admissionregistration.k8s.io/v1` | 1.22 | API version update |
@@ -151,10 +179,10 @@ janos --check ./k8s-manifests
 
 ## 🤖 GitHub Actions CI Workflow
 
-Block pull requests containing deprecated APIs automatically:
+Automatically scan pull requests and post an audit comment:
 
 ```yaml
-name: Validate Kubernetes Manifests
+name: Kubernetes Deprecation Check
 
 on:
   pull_request:
@@ -164,15 +192,24 @@ on:
       - '**/*.yml'
 
 jobs:
-  validate:
+  audit-manifests:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+
       - uses: actions/setup-node@v4
         with:
           node-version: 22
-      - name: Run Janos Check
-        run: npx janos --check ./k8s
+
+      - name: Run Janos Deprecation Audit
+        run: |
+          npx janos --audit -d ./k8s --check --format markdown > report.md
+
+      - name: Post PR Comment
+        if: failure()
+        uses: thollander/actions-comment-pull-request@v2
+        with:
+          filePath: report.md
 ```
 
 ---
@@ -186,7 +223,7 @@ Janos uses Node's native zero-dependency test runner (`node:test`):
 npm test
 
 # Run tests in watch mode:
-node --test --watch src/**/*.spec.js src/**/*.test.js
+node --test --watch
 ```
 
 ---

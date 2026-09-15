@@ -310,3 +310,36 @@ describe('fixtures integration test', () => {
     assert.deepEqual(outputObjects, expectedObjects);
   });
 });
+
+describe('target version gating', () => {
+  it('should gate migrations based on targetVersion', () => {
+    const input = [
+      // 1.16
+      { apiVersion: 'extensions/v1beta1', kind: 'Deployment', metadata: { name: 'dep-116' }, spec: { template: { metadata: { labels: { app: 'dep' } } } } },
+      // 1.22
+      { apiVersion: 'extensions/v1beta1', kind: 'Ingress', metadata: { name: 'ing-122' }, spec: { backend: { serviceName: 'svc', servicePort: 80 } } },
+      // 1.25
+      { apiVersion: 'batch/v1beta1', kind: 'CronJob', metadata: { name: 'cron-125' } },
+      // 1.26
+      { apiVersion: 'autoscaling/v2beta2', kind: 'HorizontalPodAutoscaler', metadata: { name: 'hpa-126' } },
+      // 1.32
+      { apiVersion: 'flowcontrol.apiserver.k8s.io/v1beta3', kind: 'FlowSchema', metadata: { name: 'fs-132' } },
+    ];
+
+    // Gate at 1.22: only 1.16 and 1.22 should be migrated; 1.25, 1.26, 1.32 should remain unchanged
+    const out122 = migration.parseDocs(input, { targetVersion: '1.22' });
+    assert.equal(out122[0].apiVersion, 'apps/v1'); // migrated (1.16)
+    assert.equal(out122[1].apiVersion, 'networking.k8s.io/v1'); // migrated (1.22)
+    assert.equal(out122[2].apiVersion, 'batch/v1beta1'); // UNCHANGED (removed in 1.25)
+    assert.equal(out122[3].apiVersion, 'autoscaling/v2beta2'); // UNCHANGED (removed in 1.26)
+    assert.equal(out122[4].apiVersion, 'flowcontrol.apiserver.k8s.io/v1beta3'); // UNCHANGED (removed in 1.32)
+
+    // Gate at 1.25: 1.16, 1.22, 1.25 migrated; 1.26 and 1.32 unchanged
+    const out125 = migration.parseDocs(input, { targetVersion: '1.25' });
+    assert.equal(out125[0].apiVersion, 'apps/v1'); // migrated
+    assert.equal(out125[1].apiVersion, 'networking.k8s.io/v1'); // migrated
+    assert.equal(out125[2].apiVersion, 'batch/v1'); // migrated (1.25)
+    assert.equal(out125[3].apiVersion, 'autoscaling/v2beta2'); // UNCHANGED (1.26)
+    assert.equal(out125[4].apiVersion, 'flowcontrol.apiserver.k8s.io/v1beta3'); // UNCHANGED (1.32)
+  });
+});

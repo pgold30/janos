@@ -1,6 +1,5 @@
 /**
  * Copyright 2021-2026, Pablo Loschi
- * Copyright 2026, Pablo Loschi
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
@@ -20,6 +19,8 @@ const path = require('path');
 const yaml = require('./yaml');
 const migration = require('./migration');
 const cli = require('./cli');
+const audit = require('./audit');
+const { convertIngressToGateway } = require('./gateway');
 
 function findYamlFiles(targetDir) {
   const results = [];
@@ -113,7 +114,40 @@ function convertFile(filePath, options = {}) {
       return { filePath, changed: false, events: [], error: null };
     }
 
-    const migratedDocs = migration.parseDocs(docs, reporter);
+    // Ingress to Gateway API mode
+    if (options.ingressToGateway) {
+      const generated = [];
+      for (const docNode of docs) {
+        const plain = yaml.toPlainObject(docNode);
+        if (plain && plain.kind === 'Ingress') {
+          const routes = convertIngressToGateway(plain, {
+            generateGateway: options.generateGateway,
+          });
+          generated.push(...routes);
+        }
+      }
+
+      if (generated.length > 0) {
+        const newContent = yaml.dumpDocuments(generated);
+        const targetOut = options.out || filePath.replace(/\.ya?ml$/, '.gateway.yaml');
+        if (!options.dryRun) {
+          fs.writeFileSync(targetOut, newContent, 'utf8');
+        }
+        return {
+          filePath,
+          outPath: targetOut,
+          changed: true,
+          events: [{ type: 'migrated', message: `Converted Ingress to Gateway API -> ${targetOut}` }],
+          error: null,
+        };
+      }
+      return { filePath, changed: false, events: [], error: null };
+    }
+
+    const migratedDocs = migration.parseDocs(docs, {
+      reporter,
+      targetVersion: options.targetVersion,
+    });
     const newContent = yaml.dumpDocuments(migratedDocs);
 
     const changed = originalContent.trim() !== newContent.trim();
@@ -189,9 +223,26 @@ function main(argv) {
     return;
   }
 
+  // Pluto-style Audit mode
+  if (args.audit) {
+    const report = audit.auditFiles(filesToProcess);
+    const output = audit.formatReport(report, args.format);
+    console.log(output);
+
+    if (args.check && report.deprecatedCount > 0) {
+      process.exitCode = 1;
+    }
+    return;
+  }
+
   if (!args.quiet) {
-    const mode = args.check ? 'Checking' : args.dryRun ? 'Dry-run previewing' : 'Converting';
-    console.log(`${mode} ${filesToProcess.length} YAML file(s)...`);
+    let mode = 'Converting';
+    if (args.check) mode = 'Checking';
+    else if (args.dryRun) mode = 'Dry-run previewing';
+    else if (args.ingressToGateway) mode = 'Migrating Ingress to Gateway API for';
+
+    const versionNote = args.targetVersion ? ` (target version: v${args.targetVersion})` : '';
+    console.log(`${mode} ${filesToProcess.length} YAML file(s)${versionNote}...`);
   }
 
   let changedCount = 0;

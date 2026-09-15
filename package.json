@@ -7,7 +7,7 @@
     "janos": "./bin/janos.js"
   },
   "scripts": {
-    "test": "node --test src/**/*.spec.js src/**/*.test.js",
+    "test": "node --test",
     "start": "node bin/janos.js"
   },
   "keywords": [

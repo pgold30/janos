@@ -1,6 +1,5 @@
 /**
  * Copyright 2021-2026, Pablo Loschi
- * Copyright 2026, Pablo Loschi
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
@@ -67,6 +66,15 @@ function deleteVal(doc, path) {
   }
 }
 
+function parseVersion(v) {
+  if (typeof v === 'number') return v;
+  if (!v || typeof v !== 'string') return 999.0;
+  const cleaned = v.replace(/^v/, '').trim();
+  const match = cleaned.match(/^(\d+)\.(\d+)/);
+  if (!match) return 999.0;
+  return parseFloat(`${match[1]}.${match[2]}`);
+}
+
 function normalizeKind(kind) {
   if (!kind || typeof kind !== 'string') return kind;
   const lower = kind.toLowerCase();
@@ -111,6 +119,38 @@ function normalizeKind(kind) {
     prioritylevelconfiguration: 'PriorityLevelConfiguration',
   };
   return map[lower] || kind;
+}
+
+function getRemovalVersion(kind, apiVersion) {
+  const norm = normalizeKind(kind);
+  const v = typeof apiVersion === 'string' ? apiVersion.trim() : apiVersion;
+
+  if (norm === 'HorizontalPodAutoscaler') {
+    if (v === 'autoscaling/v2beta1') return 1.25;
+    if (v === 'autoscaling/v2beta2') return 1.26;
+  }
+  if (norm === 'FlowSchema' || norm === 'PriorityLevelConfiguration') {
+    if (v === 'flowcontrol.apiserver.k8s.io/v1beta1') return 1.26;
+    if (v === 'flowcontrol.apiserver.k8s.io/v1beta2') return 1.29;
+    if (v === 'flowcontrol.apiserver.k8s.io/v1beta3') return 1.32;
+  }
+  if (norm === 'Role' || norm === 'RoleBinding' || norm === 'ClusterRole' || norm === 'ClusterRoleBinding') {
+    if (v === 'rbac.authorization.k8s.io/v1alpha1') return 1.17;
+    return 1.22;
+  }
+  if (['Deployment', 'DaemonSet', 'StatefulSet', 'ReplicaSet', 'NetworkPolicy'].includes(norm)) {
+    return 1.16;
+  }
+  if (norm === 'PodSecurityPolicy') {
+    return 1.25;
+  }
+  if (['CronJob', 'PodDisruptionBudget', 'EndpointSlice', 'Event', 'RuntimeClass'].includes(norm)) {
+    return 1.25;
+  }
+  if (norm === 'CSIStorageCapacity') {
+    return 1.27;
+  }
+  return 1.22;
 }
 
 function migrateIngressBackend(backend) {
@@ -340,17 +380,28 @@ const MIGRATION_RULES = {
   },
 };
 
-function parseDocs(docs, reporter) {
+function parseDocs(docs, optionsOrReporter) {
   if (!Array.isArray(docs)) {
     return [];
   }
+
+  let reporter = null;
+  let targetVersion = null;
+
+  if (typeof optionsOrReporter === 'function') {
+    reporter = optionsOrReporter;
+  } else if (optionsOrReporter && typeof optionsOrReporter === 'object') {
+    reporter = optionsOrReporter.reporter;
+    targetVersion = optionsOrReporter.targetVersion;
+  }
+
   return docs
     .filter((doc) => doc != null)
-    .map((doc) => replaceDeprecatedAPIs(doc, reporter))
+    .map((doc) => replaceDeprecatedAPIs(doc, reporter, targetVersion))
     .map((doc) => addSpecSelector(doc, reporter));
 }
 
-function replaceDeprecatedAPIs(resource, reporter) {
+function replaceDeprecatedAPIs(resource, reporter, targetVersion) {
   const rawKind = getVal(resource, 'kind');
   if (!rawKind) return resource;
 
@@ -360,25 +411,35 @@ function replaceDeprecatedAPIs(resource, reporter) {
   const name = getVal(resource, ['metadata', 'name']) || 'unnamed';
 
   const rule = MIGRATION_RULES[kind];
-  if (rule) {
-    if (rule.legacy.includes(apiVersion)) {
-      if (reporter) {
-        reporter({
-          type: 'migrated',
-          kind,
-          name,
-          from: apiVersion,
-          to: rule.target,
-          message: `Replace apiVersion for "${kind}" - "${name}" (${apiVersion} -> ${rule.target})`,
-        });
-      } else {
-        console.log(`Replace apiVersion for "${kind}" - "${name}"`);
-      }
-      setVal(resource, 'apiVersion', rule.target);
+  if (rule && rule.legacy.includes(apiVersion)) {
+    const removalVer = getRemovalVersion(kind, apiVersion);
 
-      if (typeof rule.transform === 'function') {
-        rule.transform(resource);
+    if (targetVersion) {
+      const maxVer = parseVersion(targetVersion);
+      if (removalVer > maxVer) {
+        // Target version is lower than when this API was removed; skip upgrading it.
+        return resource;
       }
+    }
+
+    if (reporter) {
+      reporter({
+        type: 'migrated',
+        kind,
+        name,
+        from: apiVersion,
+        to: rule.target,
+        removedIn: removalVer,
+        message: `Replace apiVersion for "${kind}" - "${name}" (${apiVersion} -> ${rule.target}) [v${removalVer}]`,
+      });
+    } else {
+      console.log(`Replace apiVersion for "${kind}" - "${name}"`);
+    }
+
+    setVal(resource, 'apiVersion', rule.target);
+
+    if (typeof rule.transform === 'function') {
+      rule.transform(resource);
     }
 
     if (rule.warning) {
@@ -437,5 +498,7 @@ module.exports = {
   replaceDeprecatedAPIs,
   addSpecSelector,
   normalizeKind,
+  getRemovalVersion,
+  parseVersion,
   MIGRATION_RULES,
 };
