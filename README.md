@@ -1,78 +1,176 @@
-# Janos
-Janos is a K8s migration tool that update your manifests in order to be compatible with newer versions. __It does not work with Helm templates, just with pure yaml files.__
+# Janos 🚀
 
-[![License](https://img.shields.io/badge/license--lightgrey.svg)](LICENSE.md)
+> Automated Kubernetes manifest migration tool for API version upgrades.
+
+[![CI](https://github.com/pgold30/janos/actions/workflows/ci.yml/badge.svg)](https://github.com/pgold30/janos/actions/workflows/ci.yml)
+[![Node.js](https://img.shields.io/badge/node-%3E%3D18.0.0-brightgreen.svg)](https://nodejs.org/)
+[![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE.md)
 [![Contributor Covenant](https://img.shields.io/badge/Contributor%20Covenant-v1.4%20adopted-ff69b4.svg)](CODE_OF_CONDUCT.md)
 
-<div align="center">
+Janos automatically upgrades Kubernetes YAML manifests to replace deprecated and removed `apiVersion`s across cluster upgrades (from Kubernetes **1.16** all the way to **1.32+**).
 
-# <Janos>
+Unlike older tools, **Janos preserves all YAML comments, whitespace, and formatting** using AST-based document manipulation.
 
-<Janos is a K8s migration tool that update your manifests in order to be compatible with newer versions>
+---
 
-</div>
+## ✨ Key Features
 
-> **TLDR;**
-> Have your Kuberenetes manifests up to date
+- **AST Comment & Formatting Preservation**: Inline comments, headers, and document structures remain untouched.
+- **Preview & Safe Execution**:
+  - `--dry-run`: Preview changes without altering files.
+  - `--diff`: Inspect changes with colorized unified diffs in your terminal.
+- **CI / CD Ready**:
+  - `--check`: Exits with code `1` if manifests need migration, `0` if clean. Perfect for pull request validation!
+- **Deep Manifest Transformations**:
+  - Automatically adds required `spec.selector` for `Deployment`, `DaemonSet`, `StatefulSet`, and `ReplicaSet`.
+  - Migrates Ingress v1 schemas (`spec.backend` -> `spec.defaultBackend`, `serviceName`/`servicePort` -> `service.name`/`service.port`, and injects required `pathType: Prefix`).
+  - Migrates HorizontalPodAutoscaler to `autoscaling/v2` with updated metric target specifications.
+- **Zero-Dependency Core**: Fast, lightweight, and modern.
 
+---
 
-##### Table of contents
+## 📦 Installation
 
-- [Installation](#installation)
-- [Usage](#usage)
-- [List of Changes](#list-of-changes)
-- [More Info](#more-info)
+### Option 1: Run directly with npx (no install required)
 
-## Overview
-Janos will convert all your manifest files, updating it inplace. If you pass a directory as a parameter, it will do a recursive search. All comments are removed, and the file formatting may change.
+```sh
+npx janos -f deployment.yaml --diff
+```
 
-## Installation
+### Option 2: Install globally via npm
 
-Build the image before running the script, because it will be executed inside the container.
+```sh
+npm install -g janos
+janos --help
+```
+
+### Option 3: Run with Docker
+
 ```sh
 # Build image
 make build
 
-# Copy entrypoint script to /usr/local/bin
-make install
+# Run via docker helper
+./janos.sh -d ./manifests --diff
 ```
 
-## Usage
+---
+
+## 🛠️ Usage
+
+```text
+Usage:
+  janos [options] [path]
+
+Options:
+  -f, --file <file>     Target single manifest file to convert
+  -d, --dir <dir>       Target directory to recursively scan and convert
+  -n, --dry-run         Preview changes without modifying files
+      --diff            Show unified diff of changes
+  -c, --check           CI mode: exit 1 if any files need migration, 0 if clean
+  -q, --quiet           Suppress non-essential output
+  -v, --version         Print version information
+  -h, --help            Print this help message
+```
+
+### Examples
 
 ```sh
-janos {-d|-f}
--f file       The file to be converted.
--d dir        The directory with the yaml files to be converted.
+# Convert a single manifest in-place:
+janos -f deployment.yaml
+
+# Recursively scan and convert a folder:
+janos -d ./k8s-manifests
+
+# Preview changes with colored diff without touching files:
+janos -d ./k8s-manifests --dry-run --diff
+
+# Validate in CI pipeline (fails if outdated manifests are found):
+janos --check ./k8s-manifests
+
+# Positional arguments are also supported:
+janos ./k8s-manifests
 ```
-All the rules are in the file migration.js.
 
-## List of Changes
-  - 1.16: for Kind: Deployment |Daemonset |Statefulset |ReplicaSet Replace: extensions/v1beta1 | apps/v1beta1 | apps/v1beta2 with apps/v1
-  - 1.16: for Kind: Ingress. Replace: extensions/v1beta1 with networking.k8s.io/v1beta1
-  - 1.16: for Kind: PodSecurityPolicy. Replace: extensions/v1beta1 |apps/v1beta2 with policy/v1beta1
-  - 1.16: Generates the now required spec.selector for Kind Deployment |Daemonset |Statefulset |ReplicaSet (using matchLabels app name, you can read more about these here), only if it doesn't exist
-  - 1.17: for Kinds:Role |ClusterRole |RoleBinding |ClusterRoleBinding: Replace rbac.authorization.k8s.io/v1alpha1 | rbac.authorization.k8s.io/v1beta1 with rbac.authorization.k8s.io/v1
-  - 1.19: for Kind: HorizontalPodAutoscaler. Replace: autoscaling/v2beta1 with autoscaling/v2beta2
-  - 1.21: for ValidatingWebhookConfiguration and MutatingWebhookConfiguration: Replace admissionregistration.k8s.io/v1beta1 with admissionregistration.k8s.io/v1
-  - 1.21: for CustomResourceDefinition |TokenReview |SubjectAccessReview |LocalSubjectAccessReview |SelfSubjectAccessReview: Replace apiextensions.k8s.io/v1beta1 with apiextensions.k8s.io/v1
-  - 1.21: for CertificateSigningRequest: Replace certificates.k8s.io/v1beta1 with certificates.k8s.io/v1
-  - 1.21: for Lease: Replace coordination.k8s.io/v1beta1 with coordination.k8s.io/v1
-  - 1.21: for Ingress: Replace extensions/v1beta1 |networking.k8s.io/v1beta1 with networking.k8s.io/v1
-  - 1.21: for RBAC: Replace rbac.authorization.k8s.io/v1beta1 with rbac.authorization.k8s.io/v1
-  - 1.21: for PriorityClasss: Replace scheduling.k8s.io/v1beta1 with scheduling.k8s.io/v1
-  - 1.21: for CSIDriver, CSINode and StorageClass: Replace VolumeAttachmentstorage.k8s.io/v1beta1 with storage.k8s.io/v1
+---
 
-## More Info
-There is more information about other changes here :). Thanks https://marcincuber.medium.com/
+## 📋 Supported API Migrations Matrix
 
-* [1.16 to 1.17](https://marcincuber.medium.com/amazon-eks-upgrade-journey-from-1-16-to-1-17-cb9e88191165)
-* [1.17 to 1.18](https://marcincuber.medium.com/amazon-eks-upgrade-journey-from-1-17-to-1-18-e35e134ca898)
-* [1.18 to 1.19](https://marcincuber.medium.com/amazon-eks-upgrade-journey-from-1-18-to-1-19-cca82de84333)
-* [1.19 to 1.20](https://marcincuber.medium.com/amazon-eks-upgrade-journey-from-1-19-to-1-20-78c9a7edddb5)
-* [1.20 to 1.21](https://marcincuber.medium.com/amazon-eks-upgrade-journey-from-1-20-to-1-21-caf1475deaa4)
-* [1.21 to 1.22](https://marcincuber.medium.com/amazon-eks-upgrade-journey-from-1-21-to-1-22-9546da932af6)
-* [1.22 to 1.23](https://marcincuber.medium.com/amazon-eks-upgrade-journey-from-1-22-to-1-23-3b9eaa8c57de)
-* [1.23 to 1.24](https://marcincuber.medium.com/amazon-eks-upgrade-journey-from-1-23-to-1-24-b7b0b1afa5b4)
+| Kind | Deprecated / Removed Versions | Target Version | First Removed / Deprecated In | Notes |
+| :--- | :--- | :--- | :--- | :--- |
+| **Deployment** | `extensions/v1beta1`, `apps/v1beta1`, `apps/v1beta2` | `apps/v1` | 1.16 | Generates `spec.selector` if missing |
+| **DaemonSet** | `extensions/v1beta1`, `apps/v1beta2` | `apps/v1` | 1.16 | Generates `spec.selector` if missing |
+| **StatefulSet** | `apps/v1beta1`, `apps/v1beta2` | `apps/v1` | 1.16 | Generates `spec.selector` if missing |
+| **ReplicaSet** | `extensions/v1beta1`, `apps/v1beta1`, `apps/v1beta2` | `apps/v1` | 1.16 | Generates `spec.selector` if missing |
+| **NetworkPolicy** | `extensions/v1beta1` | `networking.k8s.io/v1` | 1.16 | |
+| **PodSecurityPolicy** | `extensions/v1beta1`, `apps/v1beta2` | `policy/v1beta1` | 1.16 / 1.25 | Removed in 1.25 (warning emitted for Pod Security Standards) |
+| **Role / ClusterRole** | `rbac.authorization.k8s.io/v1alpha1`, `v1beta1` | `rbac.authorization.k8s.io/v1` | 1.17 / 1.22 | |
+| **RoleBinding / ClusterRoleBinding** | `rbac.authorization.k8s.io/v1alpha1`, `v1beta1` | `rbac.authorization.k8s.io/v1` | 1.17 / 1.22 | |
+| **Ingress** | `extensions/v1beta1`, `networking.k8s.io/v1beta1` | `networking.k8s.io/v1` | 1.22 | Migrates `backend` to `service.name`/`port` & adds `pathType` |
+| **IngressClass** | `networking.k8s.io/v1beta1` | `networking.k8s.io/v1` | 1.22 | |
+| **CustomResourceDefinition** | `apiextensions.k8s.io/v1beta1` | `apiextensions.k8s.io/v1` | 1.22 | |
+| **ValidatingWebhookConfiguration** | `admissionregistration.k8s.io/v1beta1` | `admissionregistration.k8s.io/v1` | 1.22 | |
+| **MutatingWebhookConfiguration** | `admissionregistration.k8s.io/v1beta1` | `admissionregistration.k8s.io/v1` | 1.22 | |
+| **StorageClass / CSIDriver / CSINode** | `storage.k8s.io/v1beta1` | `storage.k8s.io/v1` | 1.22 | |
+| **VolumeAttachment** | `storage.k8s.io/v1beta1` | `storage.k8s.io/v1` | 1.22 | |
+| **APIService** | `apiregistration.k8s.io/v1beta1` | `apiregistration.k8s.io/v1` | 1.22 | |
+| **PriorityClass** | `scheduling.k8s.io/v1beta1` | `scheduling.k8s.io/v1` | 1.22 | |
+| **Lease** | `coordination.k8s.io/v1beta1` | `coordination.k8s.io/v1` | 1.22 | |
+| **CertificateSigningRequest** | `certificates.k8s.io/v1beta1` | `certificates.k8s.io/v1` | 1.22 | |
+| **TokenReview / SubjectAccessReview** | `authentication/authorization.k8s.io/v1beta1` | `authentication/authorization.k8s.io/v1` | 1.22 | |
+| **CronJob** | `batch/v1beta1` | `batch/v1` | 1.25 | |
+| **PodDisruptionBudget** | `policy/v1beta1` | `policy/v1` | 1.25 | |
+| **EndpointSlice** | `discovery.k8s.io/v1beta1` | `discovery.k8s.io/v1` | 1.25 | |
+| **Event** | `events.k8s.io/v1beta1` | `events.k8s.io/v1` | 1.25 | |
+| **RuntimeClass** | `node.k8s.io/v1beta1` | `node.k8s.io/v1` | 1.25 | |
+| **HorizontalPodAutoscaler** | `autoscaling/v2beta1`, `v2beta2` | `autoscaling/v2` | 1.25 / 1.26 | Migrates `targetAverageUtilization` to `target.type/averageUtilization` |
+| **CSIStorageCapacity** | `storage.k8s.io/v1beta1` | `storage.k8s.io/v1` | 1.27 | |
+| **FlowSchema / PriorityLevelConfiguration** | `flowcontrol.apiserver.k8s.io/v1beta1`, `v1beta2`, `v1beta3` | `flowcontrol.apiserver.k8s.io/v1` | 1.26 / 1.29 / 1.32 | |
 
-### Maintainers
-- [Pablo Loschi](mailto:loschi.pablo@gmail.com)
+---
+
+## 🤖 CI / CD Integration Example
+
+Easily block deprecated Kubernetes manifests in GitHub Actions pull requests:
+
+```yaml
+name: Validate Kubernetes Manifests
+
+on:
+  pull_request:
+    paths:
+      - 'k8s/**'
+      - '**/*.yaml'
+      - '**/*.yml'
+
+jobs:
+  check-manifests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Run Janos Check
+        run: npx janos --check ./k8s
+```
+
+---
+
+## 🧪 Testing
+
+Run the native test suite:
+
+```sh
+npm test
+```
+
+---
+
+## 👤 Maintainer
+
+- **Pablo Loschi** - [loschi.pablo@gmail.com](mailto:loschi.pablo@gmail.com)
+
+## 📄 License
+
+This project is licensed under the Apache-2.0 License - see the [LICENSE.md](LICENSE.md) file for details.

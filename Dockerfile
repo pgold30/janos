@@ -1,13 +1,15 @@
-FROM node:12-alpine
-
-ENTRYPOINT [ "node", "src/app.js" ]
+FROM node:22-alpine
 
 WORKDIR /app
 
-COPY package* ./
+COPY package*.json ./
 
-RUN npm install
+RUN npm ci --omit=dev
 
+COPY bin/ ./bin
 COPY src/ ./src
 
-ENV BASE_DIR /var/janos
+ENV BASE_DIR=/var/janos
+
+ENTRYPOINT [ "node", "bin/janos.js" ]
+CMD [ "--help" ]

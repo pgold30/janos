@@ -1,1 +1,6 @@
-module.exports = require('@sumup/foundry/prettier')();
+module.exports = {
+  singleQuote: true,
+  trailingComma: 'all',
+  arrowParens: 'always',
+  printWidth: 100,
+};

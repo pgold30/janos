@@ -1,3 +1,4 @@
 #!/bin/bash
+set -euo pipefail
 
-docker run -v $(PWD):/var/janos janos "$@"
+docker run --rm -v "$(pwd)":/var/janos janos "$@"

@@ -1,5 +1,6 @@
 /**
  * Copyright 2021, SumUp Ltd.
+ * Copyright 2026, Pablo Loschi
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
@@ -14,25 +15,56 @@
  */
 
 const fs = require('fs');
+const YAML = require('yaml');
 
-const yaml = require('js-yaml');
-
-function readFile(path) {
-  const file = fs.readFileSync(path, 'utf8');
-  return yaml.loadAll(file);
+function parseDocuments(content) {
+  if (typeof content !== 'string') {
+    return [];
+  }
+  return YAML.parseAllDocuments(content, { keepSourceTokens: true });
 }
 
-function writeFile(path, docs) {
-  let result = '';
-  docs.forEach((doc) => {
-    result += '---\n';
-    result += yaml.dump(doc, { noArrayIndent: true });
-  });
-  console.log('Writing result to:', path);
-  fs.writeFileSync(path, result);
+function dumpDocuments(docs) {
+  if (!docs || docs.length === 0) return '';
+  return docs
+    .map((doc, idx) => {
+      if (!doc) return '';
+      if (typeof doc.toString === 'function') {
+        const str = doc.toString();
+        // If it's a subsequent doc and doesn't already start with '---', prefix it
+        if (idx > 0 && !str.startsWith('---')) {
+          return '---\n' + str;
+        }
+        return str;
+      }
+      const dumped = YAML.stringify(doc);
+      return (idx > 0 ? '---\n' : '') + dumped;
+    })
+    .join('');
+}
+
+function readFile(path) {
+  const fileContent = fs.readFileSync(path, 'utf8');
+  return parseDocuments(fileContent);
+}
+
+function writeFile(path, docsOrString) {
+  const content = typeof docsOrString === 'string' ? docsOrString : dumpDocuments(docsOrString);
+  fs.writeFileSync(path, content, 'utf8');
+}
+
+function toPlainObject(doc) {
+  if (!doc) return doc;
+  if (typeof doc.toJS === 'function') {
+    return doc.toJS();
+  }
+  return doc;
 }
 
 module.exports = {
+  parseDocuments,
+  dumpDocuments,
   readFile,
   writeFile,
+  toPlainObject,
 };
