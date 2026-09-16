@@ -204,6 +204,16 @@ npx janos --cluster --kubeconfig ~/.kube/staging-config --audit
 npx janos --audit -d ./k8s --format markdown --output-file audit-report.md
 ```
 
+### 6. 🐳 Docker & Air-Gapped Environments (`ghcr.io`)
+For air-gapped clusters, CI runners without Node.js, or enterprise environments where `npx` is blocked:
+```sh
+# Audit manifests from container (mount local directory):
+docker run --rm -v $(pwd)/k8s:/var/janos ghcr.io/pgold30/janos --audit -d /var/janos
+
+# Audit running cluster from container (mount kubeconfig):
+docker run --rm -v ~/.kube:/root/.kube:ro ghcr.io/pgold30/janos --cluster --audit
+```
+
 ---
 
 ## 🛠️ CLI Options Reference
