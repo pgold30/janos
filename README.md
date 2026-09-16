@@ -29,13 +29,14 @@
 
 ## 🥊 Why Janos vs. Pluto & `kubectl-convert`?
 
-| Core Capability | Pluto (Fairwinds) | `kubectl-convert` (Official) | **Janos 2.2** |
+| Core Capability | Pluto (Fairwinds) | `kubectl-convert` (Official) | **Janos 2.3** |
 | :--- | :---: | :---: | :---: |
 | **Fixes manifests in-place?** | ❌ No (Read-only auditor) | ❌ No (Single file to stdout) | ✅ **Yes, recursive directory updates** |
-| **Preserves YAML comments?** | N/A (Doesn't modify files) | ❌ **Strips 100% of comments** | ✅ **100% Preserved (AST engine)** |
+| **Preserves YAML comments?** | ➖ N/A (Doesn't modify files) | ❌ **Strips 100% of comments** | ✅ **100% Preserved (AST engine)** |
 | **Live Cluster & Helm Audit?** | ✅ Yes (Helm & cluster read-only) | ❌ No | ✅ **Yes (`--cluster`, `--chart`, unrendered templates)** |
 | **Target Version Gating?** | ⚠️ Filter only | ❌ No (Forces latest API, breaking staged upgrades) | ✅ **`--target-version <v>` safe incremental upgrades** |
 | **Ingress ➔ Gateway API?** | ❌ No | ❌ No | ✅ **Built-in (`--ingress-to-gateway`)** |
+| **Git Blame & Provenance?** | ❌ No | ❌ No | ✅ **`--annotate`, `--stamp`, `--git-blame-ignore`** |
 
 ---
 
@@ -95,6 +96,34 @@ npx janos --ingress-to-gateway -f ingress.yaml
 
 # Generate HTTPRoute AND companion Gateway resource:
 npx janos --ingress-to-gateway --generate-gateway -f ingress.yaml --out gateway.yaml
+```
+
+### 6. Track Provenance & Keep Git Blame Clean (`--annotate`, `--git-blame-ignore`)
+Keep track of what changed without polluting your git history:
+```sh
+# Stamp upgraded resources with metadata annotations:
+npx janos -d ./k8s --annotate
+
+# Append inline comments showing the replaced API version:
+npx janos -d ./k8s --annotate-inline
+
+# Configure git blame to ignore the migration commit:
+git commit -am "chore: migrate deprecated kubernetes APIs"
+npx janos --git-blame-ignore
+```
+
+With `--annotate` (or `--stamp`), Janos embeds provenance metadata:
+```yaml
+metadata:
+  annotations:
+    janos.io/migrated-from: "batch/v1beta1"
+    janos.io/migrated-at: "2026-09-16T12:00:00.000Z"
+    janos.io/upgraded-by: "janos-v2.3.0"
+```
+And with `--annotate-inline`:
+```yaml
+apiVersion: batch/v1 # [janos]: migrated from batch/v1beta1
+kind: CronJob
 ```
 
 ---
@@ -211,6 +240,11 @@ Gateway API Options:
       --ingress-to-gateway      Translate Ingress manifests to Gateway API (HTTPRoute)
       --generate-gateway        Generate companion Gateway resource with --ingress-to-gateway
       --out <file>              Output file path for generated resources (default: in-place or stdout)
+
+Provenance & Git Options:
+      --annotate, --stamp       Stamp upgraded manifests with janos.io/migrated-* metadata annotations
+      --annotate-inline         Append inline comments to upgraded lines (e.g. # [janos]: migrated from ...)
+      --git-blame-ignore        Create/update .git-blame-ignore-revs and configure git to preserve blame history
 
 General & CI:
       --ignore <patterns>       Comma-separated glob ignore patterns (or use .janosignore)

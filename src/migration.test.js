@@ -343,3 +343,42 @@ describe('target version gating', () => {
     assert.equal(out125[4].apiVersion, 'flowcontrol.apiserver.k8s.io/v1beta3'); // UNCHANGED (1.32)
   });
 });
+
+describe('migration provenance and audit tracking', () => {
+  it('should stamp metadata.annotations when annotate/stamp is true', () => {
+    const inputYaml = `apiVersion: batch/v1beta1
+kind: CronJob
+metadata:
+  name: nightly-task
+  annotations:
+    existing.company.com/owner: platform-team
+spec:
+  schedule: "0 0 * * *"
+`;
+    const docs = yaml.parseDocuments(inputYaml);
+    const migrated = migration.parseDocs(docs, { annotate: true });
+    const dumped = yaml.dumpDocuments(migrated);
+
+    assert.match(dumped, /apiVersion: batch\/v1/);
+    assert.match(dumped, /janos\.io\/migrated-from: batch\/v1beta1/);
+    assert.match(dumped, /janos\.io\/migrated-at:/);
+    assert.match(dumped, /janos\.io\/upgraded-by: janos/);
+    assert.match(dumped, /existing\.company\.com\/owner: platform-team/);
+  });
+
+  it('should append inline comment when annotateInline is true', () => {
+    const inputYaml = `apiVersion: batch/v1beta1
+kind: CronJob
+metadata:
+  name: nightly-task
+spec:
+  schedule: "0 0 * * *"
+`;
+    const docs = yaml.parseDocuments(inputYaml);
+    const migrated = migration.parseDocs(docs, { annotateInline: true });
+    const dumped = yaml.dumpDocuments(migrated);
+
+    assert.match(dumped, /apiVersion: batch\/v1 # \[janos\]: migrated from batch\/v1beta1/);
+  });
+});
+

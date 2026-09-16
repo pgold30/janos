@@ -199,6 +199,13 @@ function convertIngressToGateway(ingressResource, options = {}) {
       name: meta.name ? `${meta.name}-route` : 'ingress-route',
       ...(meta.namespace ? { namespace: meta.namespace } : {}),
       ...(meta.labels ? { labels: { ...meta.labels } } : {}),
+      ...(options.annotate || options.stamp ? {
+        annotations: {
+          'janos.io/migrated-from': 'networking.k8s.io/v1/Ingress',
+          'janos.io/migrated-at': new Date().toISOString().split('T')[0],
+          'janos.io/upgraded-by': 'janos',
+        },
+      } : {}),
     },
     spec: {
       parentRefs: [parentRef],

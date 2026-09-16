@@ -65,6 +65,11 @@ Cluster & Helm Options:
       --chart, --helm <dir>     Scan or render Helm chart directory via 'helm template'
       --values <file>           Specify values YAML file for Helm chart rendering
 
+Provenance & Git Options:
+      --annotate, --stamp       Stamp upgraded manifests with janos.io/migrated-* metadata annotations
+      --annotate-inline         Append inline comments to upgraded lines (e.g. # [janos]: migrated from ...)
+      --git-blame-ignore        Create/update .git-blame-ignore-revs and configure git to preserve blame history
+
 General:
   -q, --quiet                   Suppress non-essential output
   -v, --version                 Print version information
@@ -139,6 +144,10 @@ function parseArgs(inputArgv) {
     out: { type: 'string' },
     ignore: { type: 'string' },
     annotations: { type: 'boolean', default: false },
+    annotate: { type: 'boolean', default: false },
+    stamp: { type: 'boolean', default: false },
+    'annotate-inline': { type: 'boolean', default: false },
+    'git-blame-ignore': { type: 'boolean', default: false },
     quiet: { type: 'boolean', short: 'q', default: false },
     help: { type: 'boolean', short: 'h', default: false },
     version: { type: 'boolean', short: 'v', default: false },
@@ -183,6 +192,11 @@ function parseArgs(inputArgv) {
     out: values.out ? path.resolve(BASE_DIR, values.out) : undefined,
     ignore: values.ignore,
     annotations: Boolean(values.annotations || (process.env.GITHUB_ACTIONS === 'true' && values.format !== 'json')),
+    annotate: Boolean(values.annotate || values.stamp),
+    stamp: Boolean(values.annotate || values.stamp),
+    annotateInline: Boolean(values['annotate-inline']),
+    gitBlameIgnore: Boolean(values['git-blame-ignore']),
+    'git-blame-ignore': Boolean(values['git-blame-ignore']),
     quiet: Boolean(values.quiet),
     help: Boolean(values.help),
     version: Boolean(values.version),

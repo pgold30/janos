@@ -9,7 +9,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const os = require('node:os');
 
-const { convertFile, findYamlFiles, createUnifiedDiff } = require('./app');
+const { convertFile, findYamlFiles, createUnifiedDiff, handleGitBlameIgnore } = require('./app');
 
 describe('Application logic', () => {
   it('should find YAML files in directory recursively', () => {
@@ -135,5 +135,40 @@ metadata:
     assert.match(updated, /\{\{ include "chart\.name" \. \}\}/);
 
     fs.unlinkSync(tmpFile);
+  });
+
+  it('should support convertFile with annotate and annotateInline', () => {
+    const tmpFile = path.join(os.tmpdir(), `janos-annotate-${Date.now()}.yaml`);
+    const content = `apiVersion: batch/v1beta1
+kind: CronJob
+metadata:
+  name: nightly-backup
+spec:
+  schedule: "0 1 * * *"
+`;
+    fs.writeFileSync(tmpFile, content);
+
+    const res = convertFile(tmpFile, { annotate: true, annotateInline: true });
+    assert.equal(res.changed, true);
+
+    const updated = fs.readFileSync(tmpFile, 'utf8');
+    assert.match(updated, /apiVersion: batch\/v1 # \[janos\]: migrated from batch\/v1beta1/);
+    assert.match(updated, /janos\.io\/migrated-from: batch\/v1beta1/);
+    assert.match(updated, /janos\.io\/migrated-at:/);
+    assert.match(updated, /janos\.io\/upgraded-by: janos/);
+
+    fs.unlinkSync(tmpFile);
+  });
+
+  it('should create and configure .git-blame-ignore-revs via handleGitBlameIgnore', () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'janos-blame-'));
+    const blameFile = handleGitBlameIgnore(tmpDir, true);
+
+    assert.ok(fs.existsSync(blameFile));
+    const content = fs.readFileSync(blameFile, 'utf8');
+    assert.match(content, /\.git-blame-ignore-revs/);
+    assert.match(content, /Janos automated migration/);
+
+    fs.rmSync(tmpDir, { recursive: true, force: true });
   });
 });

@@ -96,6 +96,18 @@ describe('CLI argument parser', () => {
     assert.ok(res2.kubeconfig.endsWith('my-kubeconfig'));
   });
 
+  it('should parse --annotate, --stamp, --annotate-inline, and --git-blame-ignore', () => {
+    const res1 = cli.parseArgs(['-f', 'deploy.yaml', '--annotate', '--annotate-inline', '--git-blame-ignore']);
+    assert.equal(res1.annotate, true);
+    assert.equal(res1.stamp, true);
+    assert.equal(res1.annotateInline, true);
+    assert.equal(res1.gitBlameIgnore, true);
+
+    const res2 = cli.parseArgs(['-f', 'deploy.yaml', '--stamp']);
+    assert.equal(res2.annotate, true);
+    assert.equal(res2.stamp, true);
+  });
+
   it('should return version string', () => {
     const version = cli.getVersion();
     assert.equal(typeof version, 'string');

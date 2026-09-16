@@ -1,6 +1,6 @@
 {
   "name": "janos",
-  "version": "2.2.0",
+  "version": "2.3.0",
   "description": "Automated Kubernetes manifest migration tool for API version upgrades",
   "main": "src/app.js",
   "bin": {

@@ -193,7 +193,10 @@ function migrateHelmTemplate(content, options = {}) {
       if (kind && MIGRATION_RULES[kind]) {
         const rule = MIGRATION_RULES[kind];
         if (rule.legacy.includes(apiVersion)) {
-          lines[i] = `${indent}apiVersion: ${rule.target}`;
+          const inlineComment = options.annotateInline || options['annotate-inline']
+            ? ` # [janos]: migrated from ${apiVersion}`
+            : '';
+          lines[i] = `${indent}apiVersion: ${rule.target}${inlineComment}`;
           changed = true;
           events.push({
             type: 'migrated',

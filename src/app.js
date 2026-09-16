@@ -202,6 +202,7 @@ function convertFile(filePath, options = {}) {
         if (plain && plain.kind === 'Ingress') {
           const routes = convertIngressToGateway(plain, {
             generateGateway: options.generateGateway,
+            annotate: options.annotate || options.stamp,
           });
           generated.push(...routes);
         }
@@ -229,6 +230,8 @@ function convertFile(filePath, options = {}) {
     const migratedDocs = migration.parseDocs(docs, {
       reporter,
       targetVersion: options.targetVersion,
+      annotate: options.annotate || options.stamp,
+      annotateInline: options.annotateInline || options['annotate-inline'],
     });
     const newContent = yaml.dumpDocuments(migratedDocs);
 
@@ -309,6 +312,8 @@ function handleStdin(args) {
     const migratedDocs = migration.parseDocs(docs, {
       reporter,
       targetVersion: args.targetVersion,
+      annotate: args.annotate || args.stamp,
+      annotateInline: args.annotateInline || args['annotate-inline'],
     });
     const newContent = yaml.dumpDocuments(migratedDocs);
 
@@ -488,6 +493,8 @@ function handleCluster(args) {
   const migratedDocs = migration.parseDocs(docs, {
     reporter,
     targetVersion: args.targetVersion,
+    annotate: args.annotate || args.stamp,
+    annotateInline: args.annotateInline || args['annotate-inline'],
   });
   const newContent = yaml.dumpDocuments(migratedDocs);
 
@@ -751,9 +758,56 @@ function main(argv, overrides = {}) {
     console.log(`  Files clean:    ${filesToProcess.length - changedCount}`);
   }
 
+  if (args.gitBlameIgnore && changedCount > 0 && !args.dryRun && !args.check) {
+    handleGitBlameIgnore(args.dir || (args.file ? path.dirname(args.file) : '.'), args.quiet);
+  }
+
   if (args.check && changedCount > 0) {
     process.exitCode = 1;
   }
+}
+
+function findGitRoot(startDir) {
+  let current = path.resolve(startDir || '.');
+  while (current && current !== path.dirname(current)) {
+    if (fs.existsSync(path.join(current, '.git'))) {
+      return current;
+    }
+    current = path.dirname(current);
+  }
+  return null;
+}
+
+function handleGitBlameIgnore(targetDir, quiet = false) {
+  const repoRoot = findGitRoot(targetDir) || path.resolve(targetDir || '.');
+  const blameFile = path.join(repoRoot, '.git-blame-ignore-revs');
+  const today = new Date().toISOString().split('T')[0];
+
+  const header = `# .git-blame-ignore-revs\n# Commits in this file are ignored by git blame to preserve original author history.\n# Configure locally via: git config blame.ignoreRevsFile .git-blame-ignore-revs\n\n`;
+
+  const exists = fs.existsSync(blameFile);
+  let content = exists ? fs.readFileSync(blameFile, 'utf8') : header;
+
+  const entry = `# Janos automated migration (${today})\n# Add your commit SHA below after committing:\n# <COMMIT_HASH>\n`;
+  if (!content.includes(`Janos automated migration (${today})`)) {
+    content += (content.endsWith('\n') ? '' : '\n') + entry;
+    fs.writeFileSync(blameFile, content, 'utf8');
+  }
+
+  try {
+    const { execSync } = require('child_process');
+    execSync('git config blame.ignoreRevsFile .git-blame-ignore-revs', {
+      cwd: repoRoot,
+      stdio: 'ignore',
+    });
+  } catch {}
+
+  if (!quiet) {
+    console.log(`\n\x1b[32m✔\x1b[0m Configured Git blame ignore file at: ${blameFile}`);
+    console.log(`  \x1b[90mTip: Once you commit this migration, add the commit SHA to .git-blame-ignore-revs to keep blame clean.\x1b[0m`);
+  }
+
+  return blameFile;
 }
 
 if (require.main === module) {
@@ -769,4 +823,6 @@ module.exports = {
   handleHelmChart,
   handleCluster,
   askConfirmation,
+  handleGitBlameIgnore,
+  findGitRoot,
 };

@@ -392,25 +392,36 @@ function parseDocs(docs, optionsOrReporter) {
     return [];
   }
 
-  let reporter = null;
-  let targetVersion = null;
-
+  let options = {};
   if (typeof optionsOrReporter === 'function') {
-    reporter = optionsOrReporter;
+    options = { reporter: optionsOrReporter };
   } else if (optionsOrReporter && typeof optionsOrReporter === 'object') {
-    reporter = optionsOrReporter.reporter;
-    targetVersion = optionsOrReporter.targetVersion;
+    options = { ...optionsOrReporter };
   }
 
   return docs
     .filter((doc) => doc != null)
-    .map((doc) => replaceDeprecatedAPIs(doc, reporter, targetVersion))
-    .map((doc) => addSpecSelector(doc, reporter));
+    .map((doc) => replaceDeprecatedAPIs(doc, options))
+    .map((doc) => addSpecSelector(doc, options.reporter));
 }
 
-function replaceDeprecatedAPIs(resource, reporter, targetVersion) {
+function replaceDeprecatedAPIs(resource, reporterOrOptions, targetVersionArg) {
   const rawKind = getVal(resource, 'kind');
   if (!rawKind) return resource;
+
+  let reporter = null;
+  let targetVersion = targetVersionArg;
+  let annotate = false;
+  let annotateInline = false;
+
+  if (typeof reporterOrOptions === 'function') {
+    reporter = reporterOrOptions;
+  } else if (reporterOrOptions && typeof reporterOrOptions === 'object') {
+    reporter = reporterOrOptions.reporter;
+    targetVersion = reporterOrOptions.targetVersion !== undefined ? reporterOrOptions.targetVersion : targetVersionArg;
+    annotate = Boolean(reporterOrOptions.annotate || reporterOrOptions.stamp);
+    annotateInline = Boolean(reporterOrOptions.annotateInline || reporterOrOptions['annotate-inline']);
+  }
 
   const kind = normalizeKind(rawKind);
   const rawApiVersion = getVal(resource, 'apiVersion');
@@ -444,6 +455,20 @@ function replaceDeprecatedAPIs(resource, reporter, targetVersion) {
     }
 
     setVal(resource, 'apiVersion', rule.target);
+
+    if (annotateInline && isYamlDoc(resource)) {
+      const apiNode = resource.get('apiVersion', true);
+      if (apiNode) {
+        apiNode.comment = ` [janos]: migrated from ${apiVersion}`;
+      }
+    }
+
+    if (annotate) {
+      const today = new Date().toISOString().split('T')[0];
+      setVal(resource, ['metadata', 'annotations', 'janos.io/migrated-from'], apiVersion);
+      setVal(resource, ['metadata', 'annotations', 'janos.io/migrated-at'], today);
+      setVal(resource, ['metadata', 'annotations', 'janos.io/upgraded-by'], 'janos');
+    }
 
     if (typeof rule.transform === 'function') {
       rule.transform(resource);
