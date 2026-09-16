@@ -1,6 +1,6 @@
-# Stop Letting Kubernetes Upgrades Break Your GitOps Repos: Introducing Janos 2.1
+# Stop Letting Kubernetes Upgrades Break Your GitOps Repos: Introducing Janos 2.2
 
-> **Subtitle:** *Why `kubectl-convert` ruins your YAML comments, how we automated deprecations up to Kubernetes 1.32, seamless Helm & Kustomize integration, and an effortless bridge to the Gateway API.*
+> **Subtitle:** *Why `kubectl-convert` ruins your YAML comments, how Pluto leaves all the editing to you, and how Janos 2.2 introduces live cluster auditing, interactive migrations, and AST-preserving upgrades up to Kubernetes 1.32.*
 > **Author:** Pablo Loschi  
 > **Tags:** Kubernetes, DevOps, GitOps, Platform Engineering, SRE, Cloud Native  
 > **Reading Time:** ~6 min  
@@ -8,7 +8,6 @@
 ---
 
 ![Janos Logo](https://raw.githubusercontent.com/pgold30/janos/master/assets/logo.png)
-*(Image suggestion: Place the official Janos logo or a screenshot of the colored diff terminal output here)*
 
 ---
 
@@ -36,34 +35,21 @@ In an organization managing 50, 100, or 500 GitOps repositories across ArgoCD, F
 
 ## The Flawed Options We All Tried
 
-When platform engineers first realize they need to upgrade hundreds of manifests across dozens of microservices, they usually try one of three things:
-
-### 1. Regex Find-and-Replace (The Dangerous Shortcut)
-This almost always backfires. Kubernetes upgrades aren't just string substitutions; they involve **structural schema changes**.
-
-For instance, when Ingress moved to `networking.k8s.io/v1`:
-- `serviceName` and `servicePort` became nested under `service: { name, port: { number } }`.
-- `spec.backend` was renamed to `spec.defaultBackend`.
-- `pathType` became mandatory (`Prefix` or `Exact`).
-
-A regex find-and-replace silently produces invalid YAML manifests that pass syntax checks but crash your CI/CD pipelines during deployment.
-
-### 2. The Official `kubectl-convert` Plugin (The Comment Destroyer)
-Kubernetes has an official plugin called `kubectl-convert`. But if you've ever tried using it in production, you quickly encountered two major deal-breakers:
-1. **It was removed from standard `kubectl` years ago**: You have to hunt down separate architecture-specific binaries from dl.k8s.io.
-2. **It strips 100% of your YAML comments**: Because it parses manifests into Go internal structs and re-serializes them, every `# Managed by ArgoCD`, `# Scale threshold`, `# Review needed`, and custom indentation is wiped out. In a team codebase, losing documentation and comments is unacceptable.
-3. **No recursive repo updates**: It only processes single files via stdout (`cat file | kubectl-convert -f -`).
-
-### 3. Pluto & Kubent (Great at Pointing Fingers, Bad at Fixing)
-Tools like Fairwinds' **Pluto** and **Kube No Trouble (kubent)** are fantastic for *detecting* deprecated APIs. But they are **strictly read-only**. They generate a scary list of everything that will break in your cluster, but leave the manual editing entirely to you.
+| Core Capability | Pluto (Fairwinds) | `kubectl-convert` (Official) | **Janos 2.2** |
+| :--- | :---: | :---: | :---: |
+| **Fixes manifests in-place?** | ❌ No (Read-only auditor) | ❌ No (Single file to stdout) | ✅ **Yes, recursive directory updates** |
+| **Preserves YAML comments?** | N/A (Doesn't modify files) | ❌ **Strips 100% of comments** | ✅ **100% Preserved (AST engine)** |
+| **Live Cluster & Helm Audit?** | ✅ Yes (Helm & cluster read-only) | ❌ No | ✅ **Yes (`--cluster`, `--chart`, unrendered templates)** |
+| **Target Version Gating?** | ⚠️ Filter only | ❌ No (Forces latest API, breaking staged upgrades) | ✅ **`--target-version <v>` safe incremental upgrades** |
+| **Ingress ➔ Gateway API?** | ❌ No | ❌ No | ✅ **Built-in (`--ingress-to-gateway`)** |
 
 ---
 
-## Enter Janos 2.0: The In-Place GitOps Upgrader
+## Enter Janos 2.2: The In-Place GitOps Upgrader
 
 Two years ago, I built **Janos** — named after the Roman two-faced god of transitions, doors, and passages who looks simultaneously into the past and into the future.
 
-Today, I’m excited to release **Janos 2.0**: a complete, zero-dependency modernization designed for modern Kubernetes environments (v1.16 through v1.32+).
+Today, I’m excited to release **Janos 2.2**: a complete, zero-dependency modernization designed for modern Kubernetes environments (v1.16 through v1.32+).
 
 Here is how Janos approaches the problem differently:
 
@@ -101,7 +87,62 @@ Every comment, inline annotation, anchor, and blank line remains exactly where y
 
 ---
 
-### 2. 🎯 Target Version Gating (`--target-version 1.25`)
+### 2. 🌐 Live Cluster Auditing (`--cluster` / `--live`)
+
+Ever wondered what deprecated APIs are currently running in your active Kubernetes cluster before you initiate a control-plane upgrade?
+
+With Janos 2.2, you can query your active cluster directly via your local `kubectl`:
+
+```sh
+# Audit all workloads across the current cluster:
+npx janos --cluster --audit
+
+# Filter to a specific namespace:
+npx janos --cluster --namespace staging --audit
+
+# Only show APIs completely removed in your target version:
+npx janos --cluster --audit --target-version 1.25 --only-removed
+```
+
+No in-cluster agent, no helm chart install, and no privileged daemon required.
+
+---
+
+### 3. 💬 Interactive Confirmation Mode (`-i / --interactive`)
+
+Inspired by `git add -p`, Janos 2.2 gives you total control when upgrading a repository:
+
+```sh
+npx janos -d ./k8s-manifests -i
+```
+
+For each file that needs upgrading, Janos prompts:
+`Apply changes to k8s/cronjob.yaml? [y/n/d/a/q]`
+
+- `y`: accept and write the migration
+- `n`: skip this file
+- `d`: display the ANSI color unified diff before deciding
+- `a`: accept all remaining files without prompting
+- `q`: quit immediately, safely leaving remaining files untouched
+
+---
+
+### 4. 🚨 Status Severity Tagging (`REMOVED` vs `DEPRECATED`)
+
+Audit reports now clearly separate `🔴 REMOVED` APIs (which will cause immediate deployment failures on `kubectl apply`) from `🟡 DEPRECATED` APIs (which still work but should be modernized):
+
+```text
+┌─────────┬──────────────┬────────────────────┬──────────────────────┬────────────┬────────────┬───────────────────┐
+│ Kind    │ Name         │ Current API        │ Target API           │ Removed In │ Status     │ File              │
+├─────────┼──────────────┼────────────────────┼──────────────────────┼────────────┼────────────┼───────────────────┤
+│ Ingress │ web-ingress  │ extensions/v1beta1 │ networking.k8s.io/v1 │ v1.22      │ REMOVED    │ k8s/ingress.yaml  │
+│ CronJob │ nightly-task │ batch/v1beta1      │ batch/v1             │ v1.25      │ DEPRECATED │ k8s/cron.yaml     │
+└─────────┴──────────────┴────────────────────┴──────────────────────┴────────────┴────────────┴───────────────────┘
+```
+
+---
+
+### 5. 🎯 Target Version Gating (`--target-version 1.25`)
 
 If your company is upgrading from Kubernetes 1.21 to 1.25, you do **not** want a tool that prematurely converts APIs that require 1.26 or 1.29 (such as HPA `v2` metrics or FlowControl `v1`).
 
@@ -115,11 +156,17 @@ Migrations for future versions are skipped, keeping your manifests compatible wi
 
 ---
 
-### 3. 🌉 Ingress to Gateway API Migration (`--ingress-to-gateway`)
+### 6. 🌉 Ingress to Gateway API Migration (`--ingress-to-gateway`)
 
 With the retirement of `ingress-nginx` and the industry-wide shift toward the **Kubernetes Gateway API**, migrating from Ingress to `HTTPRoute` is the biggest networking transition happening today.
 
-Inspired by the SIG-Network `ingress2gateway` initiative, Janos 2.0 includes a built-in migration engine to convert legacy Ingress manifests into modern Gateway API resources:
+Janos automatically:
+- Maps `spec.rules[*].host` to `HTTPRoute.spec.hostnames`.
+- Translates paths to `matches.path` (`PathPrefix` and `Exact`).
+- Converts `serviceName`/`servicePort` to `backendRefs`.
+- Maps Ingress classes to `parentRefs`.
+- Converts NGINX rewrite annotations into standard `URLRewrite` filters.
+- Translates SSL redirect annotations into `RequestRedirect` filters.
 
 ```sh
 # Generate HTTPRoute alongside your Ingress:
@@ -129,62 +176,18 @@ npx janos --ingress-to-gateway -f ingress.yaml
 npx janos --ingress-to-gateway --generate-gateway -f ingress.yaml --out gateway.yaml
 ```
 
-Janos automatically:
-- Maps `spec.rules[*].host` to `HTTPRoute.spec.hostnames`.
-- Translates paths to `matches.path` (`PathPrefix` and `Exact`).
-- Converts `serviceName`/`servicePort` to `backendRefs`.
-- Maps Ingress classes to `parentRefs`.
-- Converts NGINX rewrite annotations (`nginx.ingress.kubernetes.io/rewrite-target`) into standard `URLRewrite` filters.
-
 ---
 
-### 4. 📊 Pluto-Style Read-Only Audit & PR Markdown Tables
-
-Want to know what's deprecated before modifying anything?
-
-```sh
-npx janos --audit -d ./k8s
-```
-
-Janos prints an ASCII table summarizing every deprecated resource, its target version, and where it was removed:
-
-```text
-┌─────────────────────────┬────────────────────────┬────────────────────────────────────┬──────────────────────────────┬────────────┬─────────────────────┐
-│ Kind                    │ Name                   │ Current API                        │ Target API                   │ Removed In │ File                │
-├─────────────────────────┼────────────────────────┼────────────────────────────────────┼──────────────────────────────┼────────────┼─────────────────────┤
-│ Ingress                 │ web-router             │ extensions/v1beta1                 │ networking.k8s.io/v1         │ v1.22      │ k8s/ingress.yaml    │
-│ CronJob                 │ maintenance-task       │ batch/v1beta1                      │ batch/v1                     │ v1.25      │ k8s/cron.yaml       │
-│ HorizontalPodAutoscaler │ autoscaler-hpa         │ autoscaling/v2beta1                │ autoscaling/v2               │ v1.25      │ k8s/hpa.yaml        │
-└─────────────────────────┴────────────────────────┴────────────────────────────────────┴──────────────────────────────┴────────────┴─────────────────────┘
-
-Summary: 3 deprecated resource(s) found across 3 file(s).
-```
-
-Need to automate this in CI? Pass `--format markdown`:
-
-```sh
-npx janos --audit -d ./k8s --format markdown > report.md
-```
-
-You can post this Markdown directly as a pull request comment in GitHub Actions to alert developers when they introduce deprecated APIs.
-
----
-
-### 5. ⎈ First-Class Helm & Unix Pipeline Integration
-
-One of the biggest hurdles in Kubernetes GitOps is that teams don't only write raw manifests — they package everything into **Helm charts** and **Kustomize overlays**.
-
-Most tools either refuse to parse Go templates (`{{ .Values... }}`) or can only run against a live cluster. Janos 2.1 solves this in three ways:
+### 7. ⎈ First-Class Helm & Unix Pipeline Integration
 
 1. **Direct Chart Rendering (`--chart`)**:
    ```sh
    npx janos --chart ./charts/my-app --audit
    npx janos --chart ./charts/my-app --values ./values-prod.yaml --audit --format markdown
    ```
-   Janos invokes `helm template` under the hood, parses the rendered stream, and audits deprecations against your target Kubernetes version.
 
 2. **Template Migration Preserving Go Expressions**:
-   If you have raw template files with `{{ include ... }}` or `{{- if ... }}`, Janos safely detects and updates deprecated `apiVersion:` lines while preserving every single Go template tag byte-for-byte.
+   Safely detects and updates deprecated `apiVersion:` lines in `templates/*.yaml` while preserving every Go template tag (`{{ ... }}`) byte-for-byte.
 
 3. **STDIN Streaming (`helm | janos -`)**:
    ```sh
@@ -194,21 +197,9 @@ Most tools either refuse to parse Go templates (`{{ .Values... }}`) or can only 
 
 ---
 
-### 6. 🔎 Safe Preview with Colored Unified Diffs
+### 8. 🤖 Official GitHub Action & Pre-commit Hooks
 
-Never let an automated tool blindly overwrite production code. Janos provides an ANSI color-coded unified diff preview:
-
-```sh
-npx janos -d ./k8s-manifests --dry-run --diff
-```
-
-You'll see green (`+`) and red (`-`) lines showing exactly what will change before a single file on disk is touched.
-
----
-
-### 7. 🤖 Official GitHub Action & Pre-commit Hooks
-
-Want to ensure deprecated APIs never get committed in the first place? Janos provides an official GitHub Action and pre-commit hook:
+Ensure deprecated APIs never get committed in the first place:
 
 ```yaml
 - name: Audit Kubernetes Manifests
@@ -225,23 +216,20 @@ It automatically adds PR line annotations in GitHub and posts the markdown summa
 
 ## Quick Start (Zero Installation Required)
 
-You don’t need to clone the repository or configure any environment. As long as you have Node.js 18+ installed, run it directly via `npx`:
+You don’t need to clone the repository or configure any environment. Run directly via `npx`:
 
 ```sh
-# 1. Audit your repo:
+# 1. Audit your live cluster:
+npx janos --cluster --audit
+
+# 2. Audit your repository manifests:
 npx janos --audit -d ./k8s
 
-# 2. Preview changes with color diffs:
+# 3. Preview changes with color diffs:
 npx janos -d ./k8s --dry-run --diff
 
-# 3. Apply changes in-place:
-npx janos -d ./k8s
-```
-
-Or run via Docker:
-
-```sh
-docker run --rm -v $(pwd):/var/janos pgold30/janos -d ./k8s --diff
+# 4. Migrate with interactive confirmation:
+npx janos -d ./k8s -i
 ```
 
 ---
@@ -253,7 +241,3 @@ Janos is 100% free and open-source under the Apache 2.0 license:
 👉 **GitHub Repository**: [https://github.com/pgold30/janos](https://github.com/pgold30/janos)
 
 If Janos saves your team hours of migration work, please consider giving it a ⭐ on GitHub and sharing it with your platform engineering team!
-
----
-
-*How is your team handling the transition away from deprecated Kubernetes APIs and Ingress-NGINX? Drop your thoughts in the comments below!*
