@@ -6,6 +6,8 @@
 
 **Audit, preview, and migrate Kubernetes manifests**
 
+[npm package](https://www.npmjs.com/package/@pgold30/janos) · [Before/after examples](examples/README.md)
+
 *Audit deprecated Kubernetes APIs in manifests or live clusters, upgrade supported manifests, and generate Gateway API resources from Ingress definitions. Review the diff before applying a migration.*
 
 [![CI](https://github.com/pgold30/janos/actions/workflows/ci.yml/badge.svg)](https://github.com/pgold30/janos/actions/workflows/ci.yml)
@@ -186,7 +188,7 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Audit Kubernetes Manifests
-        uses: pgold30/janos@master
+        uses: pgold30/janos@v2.4.0
         with:
           path: './k8s'
           args: '--audit --format markdown'
@@ -200,7 +202,7 @@ Block deprecated manifests from ever being committed to git. Add to `.pre-commit
 ```yaml
 repos:
   - repo: https://github.com/pgold30/janos
-    rev: master # pin to a commit SHA or release tag for production use
+    rev: v2.4.0
     hooks:
       - id: janos-audit     # Read-only verification before commit
       # - id: janos-migrate # Or auto-migrate in-place before commit
@@ -227,10 +229,10 @@ janos --audit -d ./k8s --format markdown --output-file audit-report.md
 For CI runners without Node.js:
 ```sh
 # Audit manifests from container (mount local directory):
-docker run --rm -v $(pwd)/k8s:/var/janos ghcr.io/pgold30/janos --audit -d /var/janos
+docker run --rm -v $(pwd)/k8s:/var/janos ghcr.io/pgold30/janos:2.4.0 --audit -d /var/janos
 
 # Audit running cluster from container (mount kubeconfig):
-docker run --rm -v ~/.kube:/root/.kube:ro ghcr.io/pgold30/janos --cluster --audit
+docker run --rm -v ~/.kube:/root/.kube:ro ghcr.io/pgold30/janos:2.4.0 --cluster --audit
 ```
 
 ---
