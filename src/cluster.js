@@ -14,6 +14,50 @@
  */
 
 const { execFileSync } = require('child_process');
+const yaml = require('./yaml');
+
+const LAST_APPLIED = 'kubectl.kubernetes.io/last-applied-configuration';
+
+/** Select the original applied manifest where kubectl stored one. */
+function collectAuditSources(liveYaml) {
+  const records = [];
+  const coverage = { resources: 0, original: 0, liveOnly: 0, invalidOriginal: 0 };
+  for (const document of yaml.parseDocuments(liveYaml)) {
+    const root = yaml.toPlainObject(document);
+    const resources = root && root.kind === 'List' && Array.isArray(root.items)
+      ? root.items : [root];
+    for (const live of resources) {
+      if (!live || typeof live !== 'object' || !live.kind) continue;
+      coverage.resources++;
+      const stored = live.metadata && live.metadata.annotations &&
+        live.metadata.annotations[LAST_APPLIED];
+      if (stored === undefined) {
+        coverage.liveOnly++;
+        records.push({ resource: live, source: 'served API' });
+        continue;
+      }
+      try {
+        const original = JSON.parse(stored);
+        const liveName = live.metadata && live.metadata.name;
+        const originalName = original && original.metadata && original.metadata.name;
+        const liveNamespace = live.metadata && live.metadata.namespace;
+        const originalNamespace = original && original.metadata && original.metadata.namespace;
+        if (!original || typeof original !== 'object' || Array.isArray(original) ||
+            typeof original.apiVersion !== 'string' || original.kind !== live.kind ||
+            !liveName || originalName !== liveName ||
+            (originalNamespace && liveNamespace && originalNamespace !== liveNamespace)) {
+          throw new Error('stored manifest does not match the live resource');
+        }
+        coverage.original++;
+        records.push({ resource: original, source: 'last-applied' });
+      } catch {
+        coverage.invalidOriginal++;
+        records.push({ resource: live, source: 'served API' });
+      }
+    }
+  }
+  return { records, coverage };
+}
 
 /**
  * Checks whether the kubectl binary is available in PATH.
@@ -80,4 +124,5 @@ function fetchClusterManifests(options = {}) {
 module.exports = {
   isKubectlInstalled,
   fetchClusterManifests,
+  collectAuditSources,
 };

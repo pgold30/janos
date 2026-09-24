@@ -1,0 +1,16 @@
+# Existing operational note should survive the API migration.
+apiVersion: batch/v1beta1
+kind: CronJob
+metadata:
+  name: nightly-cleanup
+spec:
+  schedule: "0 2 * * *"
+  jobTemplate:
+    spec:
+      template:
+        spec:
+          restartPolicy: Never
+          containers:
+            - name: cleanup
+              image: busybox:1.36
+              command: ["sh", "-c", "echo cleanup"]

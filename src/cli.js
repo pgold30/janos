@@ -54,12 +54,13 @@ Advanced Options:
       --output-file <file>      Write audit report directly to a file
       --ingress-to-gateway      Translate Ingress manifests to Gateway API (HTTPRoute)
       --generate-gateway        Generate companion Gateway resource with --ingress-to-gateway
-      --out <file>              Output file path for generated resources (default: in-place or stdout)
+      --out <file>              Output file for generated Gateway resources (default: <source>.gateway.yaml)
       --ignore <patterns>       Comma-separated glob ignore patterns (or use .janosignore)
       --annotations             Emit GitHub Actions workflow annotations (auto in CI)
 
 Cluster & Helm Options:
       --cluster, --live         Audit running Kubernetes cluster directly via kubectl
+      --require-original        With --cluster --check, fail if any original manifest is unavailable
       --namespace <ns>          Namespace filter for live cluster audit (default: all namespaces)
       --kubeconfig <file>       Custom kubeconfig file path
       --chart, --helm <dir>     Scan or render Helm chart directory via 'helm template'
@@ -125,6 +126,7 @@ function parseArgs(inputArgv) {
     stdin: { type: 'boolean', default: false },
     cluster: { type: 'boolean', default: false },
     live: { type: 'boolean', default: false },
+    'require-original': { type: 'boolean', default: false },
     namespace: { type: 'string' },
     kubeconfig: { type: 'string' },
     chart: { type: 'string' },
@@ -179,6 +181,7 @@ function parseArgs(inputArgv) {
     interactive: Boolean(values.interactive),
     stdin: isStdin,
     cluster: isCluster,
+    requireOriginal: Boolean(values['require-original']),
     namespace: values.namespace,
     kubeconfig: values.kubeconfig ? path.resolve(BASE_DIR, values.kubeconfig) : undefined,
     chart: chartTarget ? path.resolve(BASE_DIR, chartTarget) : undefined,

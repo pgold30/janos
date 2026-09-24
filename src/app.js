@@ -490,12 +490,22 @@ function handleCluster(args) {
 
   // By default in cluster mode, perform audit unless --diff or --out is explicitly requested
   if (args.audit || (!args.diff && !args.out)) {
-    const auditRes = audit.auditContent(liveYaml, 'Live Cluster', args);
+    let sources;
+    try {
+      sources = cluster.collectAuditSources(liveYaml);
+    } catch (err) {
+      console.error(`\x1b[31mError parsing cluster response:\x1b[0m ${err.message}`);
+      process.exitCode = 1;
+      return;
+    }
+    const auditResults = sources.records.map(({ resource, source }) =>
+      audit.auditContent(JSON.stringify(resource), `Live Cluster (${source})`, args));
     const report = {
       filesScanned: 1,
-      documentsScanned: auditRes.documentsScanned,
-      deprecatedCount: auditRes.items.length,
-      items: auditRes.items,
+      documentsScanned: auditResults.reduce((total, result) => total + result.documentsScanned, 0),
+      deprecatedCount: auditResults.reduce((total, result) => total + result.items.length, 0),
+      items: auditResults.flatMap((result) => result.items),
+      coverage: sources.coverage,
     };
     const output = audit.formatReport(report, args.format);
     if (args.outputFile) {
@@ -516,7 +526,8 @@ function handleCluster(args) {
       } catch {}
     }
 
-    if (args.check && report.deprecatedCount > 0) {
+    if (args.check && (report.deprecatedCount > 0 ||
+        (args.requireOriginal && sources.coverage.original !== sources.coverage.resources))) {
       process.exitCode = 1;
     }
     return;
@@ -734,7 +745,7 @@ function main(argv, overrides = {}) {
     if (res.events) {
       for (const ev of res.events) {
         if (ev.type === 'warning' || ev.type === 'manual') {
-          warnings.push({ file, message: ev.message });
+          warnings.push({ file, message: ev.message, type: ev.type });
         }
         if (ev.type === 'manual') manualCount++;
       }
@@ -808,7 +819,9 @@ function main(argv, overrides = {}) {
   }
 
   if (warnings.length > 0 && !args.quiet) {
-    console.log('\n\x1b[33mWarnings:\x1b[0m');
+    const hasManual = warnings.some((warning) => warning.type === 'manual');
+    console.log(hasManual ? '\n\x1b[33mManual migration required / warnings:\x1b[0m' :
+      '\n\x1b[33mWarnings:\x1b[0m');
     const seen = new Set();
     for (const w of warnings) {
       const key = `${w.file}:${w.message}`;
@@ -822,8 +835,8 @@ function main(argv, overrides = {}) {
   if (!args.quiet) {
     console.log('\nSummary:');
     console.log(`  Files scanned:  ${filesToProcess.length}`);
-    console.log(`  Files modified: ${changedCount}`);
-    console.log(`  Files clean:    ${filesToProcess.length - changedCount}`);
+    console.log(`  Files with changes: ${changedCount}`);
+    console.log(`  Manual resources:   ${manualCount}`);
   }
 
   if (args.gitBlameIgnore && changedCount > 0 && !args.dryRun && !args.check) {

@@ -39,18 +39,20 @@
 
 Janos is most useful when a team owns GitOps manifests and wants a reviewable sequence: **audit → dry-run diff → migrate → CI check**. For cluster history or provider-specific Gateway behavior, use the specialist tools above alongside Janos.
 
+See the [before/after gallery](examples/README.md) for reproducible conversions, manual cases, and a target-cluster server dry-run command.
+
 ---
 
 ## ⚡ Quick Start: How to Use
 
-Install Janos from this repository, then run the commands below in the directory containing your manifests:
+Install Janos from npm, then run the commands below in the directory containing your manifests:
 
 ```sh
-npm install --global github:pgold30/janos
+npm install --global @pgold30/janos@2.4.0
 janos --version
 ```
 
-For a one-off run without a global install, use `npm exec --yes --package=github:pgold30/janos -- janos --audit -d ./k8s`. The `janos` package is not currently published on npm, so `npx janos` does not install this repository.
+For a one-off run without a global install, use `npm exec --yes --package=@pgold30/janos@2.4.0 -- janos --audit -d ./k8s`. You can also install directly from this repository with `npm install --global github:pgold30/janos`.
 
 ### 1. Audit for Deprecated APIs (Read-Only)
 Find out what will break in your repository or running cluster without changing a single file:
@@ -65,7 +67,7 @@ janos --cluster --audit
 janos --audit -d ./k8s --target-version 1.25 --only-removed
 ```
 
-Cluster mode queries a fixed set of workload and networking kinds through `kubectl`. The API server may return a newer served `apiVersion` than the one originally used to create a resource, so cluster audit cannot replace scanning the source manifests. It does not inspect every Kubernetes resource kind.
+Cluster mode queries a fixed set of workload and networking kinds through `kubectl`. For each returned resource it prefers a matching `kubectl.kubernetes.io/last-applied-configuration` manifest, then falls back to the served API if that annotation is missing or invalid. Reports show the coverage counts; a served API cannot establish which version was originally applied. Use `--cluster --audit --check --require-original` to fail when any original manifest is unavailable. The collector does not inspect every Kubernetes resource kind or Helm release history, so scanning source manifests remains important.
 
 Example audit report output with severity tags:
 
@@ -211,6 +213,9 @@ The hooks process every filename passed by pre-commit, including filenames conta
 # Filter live cluster audit to a single namespace:
 janos --cluster --namespace staging --audit
 
+# Require stored original manifests for every collected resource in CI:
+janos --cluster --audit --check --require-original
+
 # Specify a custom kubeconfig file:
 janos --cluster --kubeconfig ~/.kube/staging-config --audit
 
@@ -255,6 +260,7 @@ Audit & Filter Options:
 
 Cluster & Helm Options:
       --cluster, --live         Audit running Kubernetes cluster directly via kubectl
+      --require-original        With --cluster --check, fail if any original manifest is unavailable
       --namespace <ns>          Namespace filter for live cluster audit (default: all namespaces)
       --kubeconfig <file>       Custom kubeconfig file path
       --chart, --helm <dir>     Scan or render Helm chart directory via 'helm template'

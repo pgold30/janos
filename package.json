@@ -1,12 +1,19 @@
 {
-  "name": "janos",
-  "version": "2.3.0",
+  "name": "@pgold30/janos",
+  "version": "2.4.0",
   "description": "Automated Kubernetes manifest migration tool for API version upgrades",
   "main": "src/app.js",
   "bin": {
-    "janos": "./bin/janos.js",
-    "janos-hook": "./bin/janos-hook.js"
+    "janos": "bin/janos.js",
+    "janos-hook": "bin/janos-hook.js"
   },
+  "files": [
+    "bin/",
+    "src/",
+    "examples/",
+    "README.md",
+    "LICENSE.md"
+  ],
   "scripts": {
     "test": "node --test",
     "start": "node bin/janos.js"

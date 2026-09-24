@@ -1,0 +1,8 @@
+apiVersion: policy/v1beta1
+kind: PodSecurityPolicy
+metadata:
+  name: restricted
+spec:
+  privileged: false
+  runAsUser:
+    rule: MustRunAsNonRoot

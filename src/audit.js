@@ -147,8 +147,9 @@ function auditFiles(filePaths, options = {}) {
 }
 
 function formatAsciiTable(report) {
+  const coverage = formatCoverage(report);
   if (report.items.length === 0) {
-    return '✔ No deprecated Kubernetes APIs detected across scanned files.';
+    return '✔ No deprecated Kubernetes APIs detected across scanned files.' + coverage;
   }
 
   const headers = ['Kind', 'Name', 'Current API', 'Target API', 'Removed In', 'Status', 'File'];
@@ -192,12 +193,19 @@ function formatAsciiTable(report) {
     `Summary: ${report.deprecatedCount} deprecated resource(s) found across ${report.filesScanned} file(s).`,
   ];
 
-  return lines.join('\n');
+  return lines.join('\n') + coverage;
+}
+
+function formatCoverage(report) {
+  if (!report.coverage) return '';
+  const { resources, original, liveOnly, invalidOriginal } = report.coverage;
+  return `\nSource coverage: ${original}/${resources} original manifests; ${liveOnly} served-API only; ${invalidOriginal} invalid stored originals. A served API does not prove which version was applied.`;
 }
 
 function formatMarkdownTable(report) {
+  const coverage = formatCoverage(report);
   if (report.items.length === 0) {
-    return `### 🛡️ Janos Kubernetes Audit Report\n\n✅ **All manifests are up to date!** No deprecated Kubernetes APIs found across ${report.filesScanned} file(s).`;
+    return `### 🛡️ Janos Kubernetes Audit Report\n\nNo deprecated APIs were detected in the available sources across ${report.filesScanned} file(s).${coverage}`;
   }
 
   const lines = [
@@ -219,7 +227,7 @@ function formatMarkdownTable(report) {
   lines.push('');
   lines.push('*Run `janos -d <dir>` to upgrade supported manifests in-place. Review manual-migration diagnostics.*');
 
-  return lines.join('\n');
+  return lines.join('\n') + coverage;
 }
 
 function formatGitHubAnnotations(report) {

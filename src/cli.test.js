@@ -8,6 +8,10 @@ const assert = require('node:assert/strict');
 const cli = require('./cli');
 
 describe('CLI argument parser', () => {
+  it('parses strict cluster source coverage', () => {
+    const args = cli.parseArgs(['--cluster', '--audit', '--check', '--require-original']);
+    assert.equal(args.requireOriginal, true);
+  });
   it('should reject invalid target versions', () => {
     assert.throws(() => cli.parseArgs(['--target-version', 'latest']), /--target-version/);
   });

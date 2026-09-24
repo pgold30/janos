@@ -13,6 +13,30 @@ const cluster = require('./cluster');
 const app = require('./app');
 
 describe('Cluster integration module', () => {
+  it('prefers matching last-applied manifests and reports missing or invalid originals', () => {
+    const original = { apiVersion: 'batch/v1beta1', kind: 'CronJob', metadata: { name: 'old' } };
+    const live = { apiVersion: 'batch/v1', kind: 'CronJob', metadata: { name: 'old',
+      annotations: { 'kubectl.kubernetes.io/last-applied-configuration': JSON.stringify(original) } } };
+    const missing = { apiVersion: 'batch/v1', kind: 'CronJob', metadata: { name: 'missing' } };
+    const invalid = { apiVersion: 'batch/v1', kind: 'CronJob', metadata: { name: 'invalid',
+      annotations: { 'kubectl.kubernetes.io/last-applied-configuration': '{broken' } } };
+    const result = cluster.collectAuditSources(JSON.stringify({ kind: 'List', items: [live, missing, invalid] }));
+    assert.deepEqual(result.coverage,
+      { resources: 3, original: 1, liveOnly: 1, invalidOriginal: 1 });
+    assert.equal(result.records[0].resource.apiVersion, 'batch/v1beta1');
+    assert.equal(result.records[1].source, 'served API');
+    assert.equal(result.records[2].source, 'served API');
+  });
+
+  it('rejects a stored manifest for a different resource', () => {
+    const live = { apiVersion: 'batch/v1', kind: 'CronJob', metadata: { name: 'real',
+      annotations: { 'kubectl.kubernetes.io/last-applied-configuration': JSON.stringify({
+        apiVersion: 'batch/v1beta1', kind: 'CronJob', metadata: { name: 'other' },
+      }) } } };
+    const result = cluster.collectAuditSources(JSON.stringify(live));
+    assert.equal(result.coverage.invalidOriginal, 1);
+    assert.equal(result.records[0].resource.apiVersion, 'batch/v1');
+  });
   it('should pass namespace text to kubectl without shell interpretation', () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'janos-kubectl-'));
     const marker = path.join(dir, 'executed');
@@ -91,10 +115,59 @@ items:
       assert.equal(parsed.items[0].name, 'cluster-cleanup');
       assert.equal(parsed.items[1].kind, 'Ingress');
       assert.equal(parsed.items[1].name, 'cluster-ingress');
+      assert.deepEqual(parsed.coverage,
+        { resources: 2, original: 0, liveOnly: 2, invalidOriginal: 0 });
     } finally {
       console.log = originalLog;
       cluster.fetchClusterManifests = originalFetch;
       cluster.isKubectlInstalled = originalIsInstalled;
+    }
+  });
+
+  it('finds deprecated original APIs even when kubectl serves a newer API', () => {
+    const originalFetch = cluster.fetchClusterManifests;
+    const originalIsInstalled = cluster.isKubectlInstalled;
+    const originalLog = console.log;
+    const original = { apiVersion: 'batch/v1beta1', kind: 'CronJob', metadata: { name: 'nightly' } };
+    const live = { apiVersion: 'batch/v1', kind: 'CronJob', metadata: { name: 'nightly',
+      annotations: { 'kubectl.kubernetes.io/last-applied-configuration': JSON.stringify(original) } } };
+    cluster.isKubectlInstalled = () => true;
+    cluster.fetchClusterManifests = () => JSON.stringify({ kind: 'List', items: [live] });
+    let output = '';
+    console.log = (message) => { output += message; };
+    try {
+      app.handleCluster({ cluster: true, audit: true, format: 'json', quiet: true });
+      const report = JSON.parse(output);
+      assert.equal(report.deprecatedCount, 1);
+      assert.equal(report.items[0].currentApi, 'batch/v1beta1');
+      assert.match(report.items[0].file, /last-applied/);
+    } finally {
+      cluster.fetchClusterManifests = originalFetch;
+      cluster.isKubectlInstalled = originalIsInstalled;
+      console.log = originalLog;
+    }
+  });
+
+  it('can require original-manifest coverage in cluster check mode', () => {
+    const originalFetch = cluster.fetchClusterManifests;
+    const originalIsInstalled = cluster.isKubectlInstalled;
+    const originalLog = console.log;
+    const previousExitCode = process.exitCode;
+    cluster.isKubectlInstalled = () => true;
+    cluster.fetchClusterManifests = () => JSON.stringify({ kind: 'List', items: [
+      { apiVersion: 'batch/v1', kind: 'CronJob', metadata: { name: 'nightly' } },
+    ] });
+    console.log = () => {};
+    try {
+      process.exitCode = 0;
+      app.handleCluster({ cluster: true, audit: true, format: 'json', quiet: true,
+        check: true, requireOriginal: true });
+      assert.equal(process.exitCode, 1);
+    } finally {
+      process.exitCode = previousExitCode;
+      cluster.fetchClusterManifests = originalFetch;
+      cluster.isKubectlInstalled = originalIsInstalled;
+      console.log = originalLog;
     }
   });
 
