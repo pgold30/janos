@@ -3,10 +3,32 @@ const assert = require('node:assert/strict');
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
+const { spawnSync } = require('node:child_process');
 
 const helm = require('./helm');
+const app = require('./app');
 
 describe('Helm integration module', () => {
+  it('should pass chart paths to helm without shell interpretation', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'janos-helm-argv-'));
+    const marker = path.join(dir, 'executed');
+    const chartPath = `chart$(touch ${marker})`;
+    const binary = path.join(dir, 'helm');
+    try {
+      fs.writeFileSync(binary, '#!/bin/sh\nprintf "%s\\n" "$@"\n');
+      fs.chmodSync(binary, 0o755);
+      const result = spawnSync(process.execPath, ['-e', 'process.stdout.write(require("./helm").renderChart(process.argv[1]))', chartPath], {
+        cwd: __dirname,
+        env: { ...process.env, PATH: `${dir}${path.delimiter}${process.env.PATH}` },
+        encoding: 'utf8',
+      });
+      assert.equal(result.status, 0, result.stderr);
+      assert.ok(result.stdout.includes(chartPath));
+      assert.equal(fs.existsSync(marker), false);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
   it('should detect Helm charts via isHelmChart', () => {
     const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'helm-test-'));
     try {
@@ -65,10 +87,10 @@ metadata:
     assert.equal(deployment.removedIn, 'v1.16');
   });
 
-  it('should migrate Helm template apiVersion while preserving Go template tags', () => {
-    const templateContent = `{{- if .Values.ingress.enabled }}
-apiVersion: networking.k8s.io/v1beta1
-kind: Ingress
+  it('should migrate a simple Helm template apiVersion while preserving Go template tags', () => {
+    const templateContent = `{{- if .Values.job.enabled }}
+apiVersion: batch/v1beta1
+kind: CronJob
 metadata:
   name: {{ include "mychart.fullname" . }}
   annotations:
@@ -78,10 +100,44 @@ metadata:
 
     const res = helm.migrateHelmTemplate(templateContent);
     assert.equal(res.changed, true);
-    assert.ok(res.content.includes('apiVersion: networking.k8s.io/v1'));
-    assert.ok(res.content.includes('{{- if .Values.ingress.enabled }}'));
+    assert.ok(res.content.includes('apiVersion: batch/v1'));
+    assert.ok(res.content.includes('{{- if .Values.job.enabled }}'));
     assert.ok(res.content.includes('{{ include "mychart.fullname" . }}'));
     assert.ok(res.content.includes('helm.sh/hook: {{ .Values.hook }}'));
+  });
+
+  it('should respect target version when migrating an unrendered template', () => {
+    const template = 'apiVersion: batch/v1beta1\nkind: CronJob\n';
+    assert.equal(helm.migrateHelmTemplate(template, { targetVersion: '1.22' }).changed, false);
+    assert.equal(helm.migrateHelmTemplate(template, { targetVersion: '1.25' }).changed, true);
+  });
+
+  it('leaves structural Helm migrations unchanged for manual review', () => {
+    const source = 'apiVersion: apiextensions.k8s.io/v1beta1\nkind: CustomResourceDefinition\n';
+    const result = helm.migrateHelmTemplate(source);
+    assert.equal(result.changed, false);
+    assert.equal(result.content, source);
+    assert.equal(result.events[0].type, 'manual');
+  });
+
+  it('should fail chart check mode without writing rendered output', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'janos-helm-check-'));
+    const output = path.join(dir, 'rendered.yaml');
+    const originalInstalled = helm.isHelmInstalled;
+    const originalRender = helm.renderChart;
+    const previousExitCode = process.exitCode;
+    helm.isHelmInstalled = () => true;
+    helm.renderChart = () => 'apiVersion: batch/v1beta1\nkind: CronJob\nmetadata:\n  name: nightly\n';
+    try {
+      app.handleHelmChart({ chart: dir, out: output, check: true, quiet: true });
+      assert.equal(process.exitCode, 1);
+      assert.equal(fs.existsSync(output), false);
+    } finally {
+      process.exitCode = previousExitCode;
+      helm.isHelmInstalled = originalInstalled;
+      helm.renderChart = originalRender;
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
   });
 
   it('should render chart with helm CLI if installed', () => {

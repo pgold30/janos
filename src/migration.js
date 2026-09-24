@@ -208,20 +208,205 @@ function migrateIngress(doc) {
   }
 }
 
-function migrateHPA(doc) {
-  const metrics = getVal(doc, ['spec', 'metrics']);
-  if (Array.isArray(metrics)) {
-    metrics.forEach((m, idx) => {
-      if (m && m.resource && m.resource.targetAverageUtilization !== undefined) {
-        const util = m.resource.targetAverageUtilization;
-        deleteVal(doc, ['spec', 'metrics', idx, 'resource', 'targetAverageUtilization']);
-        setVal(doc, ['spec', 'metrics', idx, 'resource', 'target'], {
-          type: 'Utilization',
-          averageUtilization: util,
-        });
-      }
-    });
+function manual(message) {
+  return { error: message, updates: [], deletes: [] };
+}
+
+function metricTarget(source) {
+  if (source.target && source.target.type) {
+    const field = { Utilization: 'averageUtilization', AverageValue: 'averageValue', Value: 'value' }[source.target.type];
+    return field && source.target[field] !== undefined ? source.target : null;
   }
+  const choices = [
+    ['targetAverageUtilization', 'Utilization', 'averageUtilization'],
+    ['targetAverageValue', 'AverageValue', 'averageValue'],
+    ['targetValue', 'Value', 'value'],
+  ].filter(([field]) => source[field] !== undefined);
+  if (choices.length !== 1) return null;
+  const [field, type, targetField] = choices[0];
+  return { type, [targetField]: source[field] };
+}
+
+function planHPA(resource, apiVersion) {
+  const metrics = getVal(resource, ['spec', 'metrics']);
+  if (metrics === undefined) return { updates: [], deletes: [] };
+  if (!Array.isArray(metrics)) return manual('spec.metrics must be a list.');
+
+  const converted = [];
+  for (const metric of metrics) {
+    if (!metric || typeof metric !== 'object') return manual('spec.metrics contains an invalid metric.');
+    const sourceKey = {
+      Resource: 'resource', ContainerResource: 'containerResource',
+      Object: 'object', Pods: 'pods', External: 'external',
+    }[metric.type];
+    const source = sourceKey && metric[sourceKey];
+    if (!source || typeof source !== 'object') {
+      return manual(`spec.metrics contains an unsupported ${metric.type || 'unknown'} metric.`);
+    }
+    const target = metricTarget(source);
+    if (!target) return manual(`${metric.type} metric needs one explicit target value.`);
+
+    const nextSource = { ...source, target };
+    delete nextSource.targetAverageUtilization;
+    delete nextSource.targetAverageValue;
+    delete nextSource.targetValue;
+
+    if (apiVersion === 'autoscaling/v2beta1' && ['Object', 'Pods', 'External'].includes(metric.type)) {
+      if (!source.metricName) return manual(`${metric.type} metric needs metricName.`);
+      nextSource.metric = {
+        name: source.metricName,
+        ...(source.selector || source.metricSelector
+          ? { selector: source.selector || source.metricSelector } : {}),
+      };
+      delete nextSource.metricName;
+      delete nextSource.selector;
+      delete nextSource.metricSelector;
+      if (metric.type === 'Object') {
+        if (!source.target || source.target.type) return manual('Object metric needs an object reference.');
+        nextSource.describedObject = source.target;
+        nextSource.target = target;
+      }
+    }
+    converted.push({ ...metric, [sourceKey]: nextSource });
+  }
+  return { updates: [[['spec', 'metrics'], converted]], deletes: [] };
+}
+
+function planCRD(resource) {
+  const spec = getVal(resource, 'spec');
+  if (!spec || !spec.group || !spec.names || !spec.names.kind || !spec.names.plural) {
+    return manual('CRD needs spec.group, spec.names.kind, spec.names.plural, and a structural schema.');
+  }
+  if (!['Namespaced', 'Cluster'].includes(spec.scope)) {
+    return manual('CRD needs an explicit spec.scope of Namespaced or Cluster; Janos cannot infer scope.');
+  }
+  if (spec.preserveUnknownFields === true) {
+    return manual('spec.preserveUnknownFields: true needs a manual structural schema migration.');
+  }
+  let versions = Array.isArray(spec.versions) ? spec.versions.map((v) => ({ ...v })) : null;
+  if (!versions || versions.length === 0) {
+    if (!spec.version) return manual('CRD needs spec.version or spec.versions.');
+    versions = [{ name: spec.version, served: true, storage: true }];
+  }
+  const updates = [];
+  const deletes = [];
+  const converted = versions.map((version) => {
+    const next = { ...version };
+    if (versions.length === 1) {
+      if (next.served === undefined) next.served = true;
+      if (next.storage === undefined) next.storage = true;
+    }
+    if (!next.schema && spec.validation) next.schema = spec.validation;
+    if (!next.subresources && spec.subresources) next.subresources = spec.subresources;
+    if (!next.additionalPrinterColumns && spec.additionalPrinterColumns) {
+      next.additionalPrinterColumns = spec.additionalPrinterColumns;
+    }
+    if (Array.isArray(next.additionalPrinterColumns)) {
+      next.additionalPrinterColumns = next.additionalPrinterColumns.map((column) => {
+        const updated = { ...column };
+        if (updated.JSONPath !== undefined && updated.jsonPath === undefined) {
+          updated.jsonPath = updated.JSONPath;
+        }
+        delete updated.JSONPath;
+        return updated;
+      });
+    }
+    return next;
+  });
+  if (converted.some((version) => !version.name || typeof version.served !== 'boolean' ||
+      typeof version.storage !== 'boolean' || !version.schema || !version.schema.openAPIV3Schema)) {
+    return manual('Every CRD version needs name, served, storage, and schema.openAPIV3Schema.');
+  }
+  if (converted.filter((version) => version.storage).length !== 1) {
+    return manual('Exactly one CRD version must have storage: true.');
+  }
+  if (new Set(converted.map((version) => version.name)).size !== converted.length ||
+      !converted.some((version) => version.served)) {
+    return manual('CRD version names must be unique and at least one version must be served.');
+  }
+  updates.push([['spec', 'versions'], converted]);
+  for (const field of ['version', 'validation', 'subresources', 'additionalPrinterColumns', 'preserveUnknownFields']) {
+    if (spec[field] !== undefined) deletes.push(['spec', field]);
+  }
+  if (spec.conversion && spec.conversion.strategy === 'Webhook') {
+    const webhook = spec.conversion.webhook || {};
+    const clientConfig = webhook.clientConfig || spec.conversion.webhookClientConfig;
+    const reviewVersions = webhook.conversionReviewVersions || spec.conversion.conversionReviewVersions;
+    if (!clientConfig || !Array.isArray(reviewVersions) || reviewVersions.length === 0) {
+      return manual('CRD conversion webhook needs clientConfig and conversionReviewVersions.');
+    }
+    updates.push([['spec', 'conversion', 'webhook'], { ...webhook, clientConfig,
+      conversionReviewVersions: reviewVersions }]);
+    for (const field of ['webhookClientConfig', 'conversionReviewVersions']) {
+      if (spec.conversion[field] !== undefined) deletes.push(['spec', 'conversion', field]);
+    }
+  }
+  return { updates, deletes };
+}
+
+function planWebhook(resource) {
+  const webhooks = getVal(resource, 'webhooks');
+  if (!Array.isArray(webhooks) || webhooks.length === 0) return manual('webhooks must be a non-empty list.');
+  const names = new Set();
+  const converted = [];
+  for (const webhook of webhooks) {
+    if (!webhook || !webhook.name || names.has(webhook.name)) {
+      return manual('Webhook names must be present and unique.');
+    }
+    names.add(webhook.name);
+    if (!['None', 'NoneOnDryRun'].includes(webhook.sideEffects)) {
+      return manual(`${webhook.name} needs sideEffects: None or NoneOnDryRun; this cannot be inferred.`);
+    }
+    if (!Array.isArray(webhook.admissionReviewVersions) || webhook.admissionReviewVersions.length === 0 ||
+        webhook.admissionReviewVersions.some((version) => !['v1', 'v1beta1'].includes(version))) {
+      return manual(`${webhook.name} needs supported admissionReviewVersions.`);
+    }
+    if (!webhook.clientConfig || (!webhook.clientConfig.service && !webhook.clientConfig.url)) {
+      return manual(`${webhook.name} needs a webhook clientConfig.`);
+    }
+    converted.push({ failurePolicy: 'Ignore', matchPolicy: 'Exact', timeoutSeconds: 30, ...webhook });
+  }
+  return { updates: [[['webhooks'], converted]], deletes: [] };
+}
+
+const CSR_USAGES = new Set([
+  'signing', 'digital signature', 'content commitment', 'key encipherment',
+  'key agreement', 'data encipherment', 'cert sign', 'crl sign', 'encipher only',
+  'decipher only', 'any', 'server auth', 'client auth', 'code signing',
+  'email protection', 's/mime', 'ipsec end system', 'ipsec tunnel',
+  'ipsec user', 'timestamping', 'ocsp signing', 'microsoft sgc', 'netscape sgc',
+]);
+
+function planCSR(resource) {
+  const spec = getVal(resource, 'spec');
+  if (!spec || !spec.signerName || spec.signerName === 'kubernetes.io/legacy-unknown') {
+    return manual('CSR needs an explicit v1 spec.signerName; Janos cannot choose a signer.');
+  }
+  if (!spec.request) return manual('CSR needs spec.request.');
+  if (!Array.isArray(spec.usages) || spec.usages.length === 0 ||
+      spec.usages.some((usage) => !CSR_USAGES.has(usage)) ||
+      new Set(spec.usages).size !== spec.usages.length) {
+    return manual('CSR needs non-empty, distinct, supported spec.usages.');
+  }
+  const conditions = getVal(resource, ['status', 'conditions']);
+  if (Array.isArray(conditions) && (conditions.some((condition) => !condition.type || !condition.status) ||
+      new Set(conditions.map((condition) => condition.type)).size !== conditions.length)) {
+    return manual('CSR status.conditions needs unique types and explicit statuses.');
+  }
+  return { updates: [], deletes: [] };
+}
+
+function planSchemaMigration(resource, kind, apiVersion) {
+  if (kind === 'PodSecurityPolicy') {
+    return manual('PodSecurityPolicy has no replacement API. Migrate its policy to Pod Security Admission or another admission controller.');
+  }
+  if (kind === 'CustomResourceDefinition') return planCRD(resource);
+  if (kind === 'ValidatingWebhookConfiguration' || kind === 'MutatingWebhookConfiguration') {
+    return planWebhook(resource);
+  }
+  if (kind === 'CertificateSigningRequest') return planCSR(resource);
+  if (kind === 'HorizontalPodAutoscaler') return planHPA(resource, apiVersion);
+  return { updates: [], deletes: [] };
 }
 
 const MIGRATION_RULES = {
@@ -246,15 +431,12 @@ const MIGRATION_RULES = {
     target: 'networking.k8s.io/v1',
   },
   PodSecurityPolicy: {
-    legacy: ['extensions/v1beta1', 'apps/v1beta2'],
-    target: 'policy/v1beta1',
-    warning:
-      'PodSecurityPolicy was completely removed in Kubernetes 1.25. Migrate to Pod Security Admission (pod-security.kubernetes.io labels).',
+    legacy: ['extensions/v1beta1', 'policy/v1beta1'],
+    target: 'Pod Security Admission (manual)',
   },
   HorizontalPodAutoscaler: {
     legacy: ['autoscaling/v2beta1', 'autoscaling/v2beta2'],
     target: 'autoscaling/v2',
-    transform: migrateHPA,
   },
   Ingress: {
     legacy: ['extensions/v1beta1', 'networking.k8s.io/v1beta1'],
@@ -433,11 +615,19 @@ function replaceDeprecatedAPIs(resource, reporterOrOptions, targetVersionArg) {
     const removalVer = getRemovalVersion(kind, apiVersion);
 
     if (targetVersion) {
-      const maxVer = parseVersion(targetVersion);
-      if (removalVer > maxVer) {
+      const maxVer = parseVersionNum(targetVersion);
+      if (parseVersionNum(removalVer) > maxVer) {
         // Target version is lower than when this API was removed; skip upgrading it.
         return resource;
       }
+    }
+
+    const plan = planSchemaMigration(resource, kind, apiVersion);
+    if (plan.error) {
+      const message = `${kind} "${name}" (${apiVersion}): ${plan.error}`;
+      if (reporter) reporter({ type: 'manual', kind, name, message });
+      else console.warn(message);
+      return resource;
     }
 
     if (reporter) {
@@ -455,6 +645,9 @@ function replaceDeprecatedAPIs(resource, reporterOrOptions, targetVersionArg) {
     }
 
     setVal(resource, 'apiVersion', rule.target);
+
+    for (const [fieldPath, value] of plan.updates) setVal(resource, fieldPath, value);
+    for (const fieldPath of plan.deletes) deleteVal(resource, fieldPath);
 
     if (annotateInline && isYamlDoc(resource)) {
       const apiNode = resource.get('apiVersion', true);
@@ -474,16 +667,6 @@ function replaceDeprecatedAPIs(resource, reporterOrOptions, targetVersionArg) {
       rule.transform(resource);
     }
 
-    if (rule.warning) {
-      if (reporter) {
-        reporter({
-          type: 'warning',
-          kind,
-          name,
-          message: rule.warning,
-        });
-      }
-    }
   }
 
   return resource;

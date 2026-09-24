@@ -11,6 +11,24 @@ const os = require('node:os');
 const app = require('./app');
 
 describe('Interactive migration confirmation (-i)', () => {
+  it('should write an approved Gateway route alongside the source Ingress', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'janos-gateway-interactive-'));
+    const input = path.join(dir, 'ingress.yaml');
+    const original = 'apiVersion: networking.k8s.io/v1\nkind: Ingress\nmetadata:\n  name: web\nspec:\n  rules:\n    - http:\n        paths:\n          - path: /\n            pathType: Prefix\n            backend:\n              service:\n                name: web\n                port:\n                  number: 80\n';
+    try {
+      fs.writeFileSync(input, original);
+      app.main(['-f', input, '-i', '--ingress-to-gateway', '--quiet'], {
+        prompter: (destination) => {
+          assert.equal(destination, path.join(dir, 'ingress.gateway.yaml'));
+          return 'y';
+        },
+      });
+      assert.equal(fs.readFileSync(input, 'utf8'), original);
+      assert.match(fs.readFileSync(path.join(dir, 'ingress.gateway.yaml'), 'utf8'), /kind: HTTPRoute/);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
   it('should apply changes when user confirms with "y"', () => {
     const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'janos-interactive-y-'));
     const file = path.join(tmpDir, 'cron.yaml');

@@ -12,4 +12,4 @@ install:
 	cp janos.sh /usr/local/bin/janos
 
 clean:
-	rm -rf node_modules package-lock.json
+	rm -rf node_modules

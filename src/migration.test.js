@@ -82,16 +82,20 @@ describe('migration engine', () => {
     assert.equal(output.apiVersion, 'networking.k8s.io/v1');
   });
 
-  it('should warn and migrate PodSecurityPolicy (1.16 / 1.25 removal)', () => {
+  it('should leave PodSecurityPolicy unchanged and require manual migration', () => {
     const warnings = [];
     const reporter = (e) => {
-      if (e.type === 'warning') warnings.push(e);
+      if (e.type === 'manual') warnings.push(e);
     };
-    const input = [{ apiVersion: 'extensions/v1beta1', kind: 'PodSecurityPolicy', metadata: { name: 'psp' } }];
-    const [output] = migration.parseDocs(input, reporter);
-    assert.equal(output.apiVersion, 'policy/v1beta1');
-    assert.equal(warnings.length, 1);
-    assert.match(warnings[0].message, /removed in Kubernetes 1.25/);
+    const input = [
+      { apiVersion: 'extensions/v1beta1', kind: 'PodSecurityPolicy', metadata: { name: 'psp' } },
+      { apiVersion: 'policy/v1beta1', kind: 'PodSecurityPolicy', metadata: { name: 'current-psp' } },
+    ];
+    const output = migration.parseDocs(input, reporter);
+    assert.equal(output[0].apiVersion, 'extensions/v1beta1');
+    assert.equal(output[1].apiVersion, 'policy/v1beta1');
+    assert.equal(warnings.length, 2);
+    assert.match(warnings[0].message, /Pod Security Admission/);
   });
 
   it('should migrate RBAC resources (1.17 and 1.22)', () => {
@@ -164,15 +168,20 @@ spec:
   it('should migrate IngressClass, CRD, and Webhooks (1.22)', () => {
     const input = [
       { apiVersion: 'networking.k8s.io/v1beta1', kind: 'IngressClass', metadata: { name: 'ic' } },
-      { apiVersion: 'apiextensions.k8s.io/v1beta1', kind: 'CustomResourceDefinition', metadata: { name: 'crd' } },
-      { apiVersion: 'admissionregistration.k8s.io/v1beta1', kind: 'ValidatingWebhookConfiguration', metadata: { name: 'vwc' } },
-      { apiVersion: 'admissionregistration.k8s.io/v1beta1', kind: 'MutatingWebhookConfiguration', metadata: { name: 'mwc' } },
+      { apiVersion: 'apiextensions.k8s.io/v1beta1', kind: 'CustomResourceDefinition', metadata: { name: 'widgets.example.com' }, spec: { group: 'example.com', names: { kind: 'Widget', plural: 'widgets' }, scope: 'Namespaced', version: 'v1', validation: { openAPIV3Schema: { type: 'object', properties: { spec: { type: 'object' } } } } } },
+      { apiVersion: 'admissionregistration.k8s.io/v1beta1', kind: 'ValidatingWebhookConfiguration', metadata: { name: 'vwc' }, webhooks: [{ name: 'validate.example.com', sideEffects: 'None', admissionReviewVersions: ['v1'], clientConfig: { service: { name: 'validator', namespace: 'default' } } }] },
+      { apiVersion: 'admissionregistration.k8s.io/v1beta1', kind: 'MutatingWebhookConfiguration', metadata: { name: 'mwc' }, webhooks: [{ name: 'mutate.example.com', sideEffects: 'NoneOnDryRun', admissionReviewVersions: ['v1'], clientConfig: { service: { name: 'mutator', namespace: 'default' } } }] },
     ];
     const output = migration.parseDocs(input);
     assert.equal(output[0].apiVersion, 'networking.k8s.io/v1');
     assert.equal(output[1].apiVersion, 'apiextensions.k8s.io/v1');
     assert.equal(output[2].apiVersion, 'admissionregistration.k8s.io/v1');
     assert.equal(output[3].apiVersion, 'admissionregistration.k8s.io/v1');
+    assert.equal(output[1].spec.versions[0].name, 'v1');
+    assert.deepEqual(output[1].spec.versions[0].schema.openAPIV3Schema.type, 'object');
+    assert.equal(output[2].webhooks[0].failurePolicy, 'Ignore');
+    assert.equal(output[2].webhooks[0].matchPolicy, 'Exact');
+    assert.equal(output[2].webhooks[0].timeoutSeconds, 30);
   });
 
   it('should migrate Storage, Lease, APIService, PriorityClass, CSR (1.22)', () => {
@@ -184,7 +193,7 @@ spec:
       { apiVersion: 'coordination.k8s.io/v1beta1', kind: 'Lease', metadata: { name: 'ls' } },
       { apiVersion: 'apiregistration.k8s.io/v1beta1', kind: 'APIService', metadata: { name: 'as' } },
       { apiVersion: 'scheduling.k8s.io/v1beta1', kind: 'PriorityClass', metadata: { name: 'pc' } },
-      { apiVersion: 'certificates.k8s.io/v1beta1', kind: 'CertificateSigningRequest', metadata: { name: 'csr' } },
+      { apiVersion: 'certificates.k8s.io/v1beta1', kind: 'CertificateSigningRequest', metadata: { name: 'csr' }, spec: { signerName: 'kubernetes.io/kube-apiserver-client', request: 'Y2VydA==', usages: ['client auth'] } },
     ];
     const output = migration.parseDocs(input);
     assert.equal(output[0].apiVersion, 'storage.k8s.io/v1');
@@ -312,6 +321,11 @@ describe('fixtures integration test', () => {
 });
 
 describe('target version gating', () => {
+  it('compares Kubernetes minor versions numerically', () => {
+    const cron = { apiVersion: 'batch/v1beta1', kind: 'CronJob', metadata: { name: 'old' } };
+    const [unchanged] = migration.parseDocs([cron], { targetVersion: '1.9', reporter: () => {} });
+    assert.equal(unchanged.apiVersion, 'batch/v1beta1');
+  });
   it('should gate migrations based on targetVersion', () => {
     const input = [
       // 1.16
@@ -381,4 +395,3 @@ spec:
     assert.match(dumped, /apiVersion: batch\/v1 # \[janos\]: migrated from batch\/v1beta1/);
   });
 });
-

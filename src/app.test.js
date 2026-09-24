@@ -74,6 +74,45 @@ describe('Application logic', () => {
     fs.unlinkSync(tmpFile);
   });
 
+  it('should keep Gateway output separate and leave check mode read-only', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'janos-gateway-app-'));
+    const input = path.join(dir, 'ingress.yaml');
+    const output = path.join(dir, 'ingress.gateway.yaml');
+    const original = 'apiVersion: networking.k8s.io/v1\nkind: Ingress\nmetadata:\n  name: web\nspec:\n  rules:\n    - http:\n        paths:\n          - path: /\n            pathType: Prefix\n            backend:\n              service:\n                name: web\n                port:\n                  number: 80\n';
+    try {
+      fs.writeFileSync(input, original);
+      const checked = convertFile(input, { ingressToGateway: true, check: true });
+      assert.equal(checked.changed, true);
+      assert.equal(fs.existsSync(output), false);
+      assert.equal(fs.readFileSync(input, 'utf8'), original);
+
+      const converted = convertFile(input, { ingressToGateway: true });
+      assert.equal(converted.outPath, output);
+      assert.match(fs.readFileSync(output, 'utf8'), /kind: HTTPRoute/);
+      assert.equal(fs.readFileSync(input, 'utf8'), original);
+
+      const unsafe = convertFile(input, { ingressToGateway: true, out: input });
+      assert.match(unsafe.error.message, /must differ/);
+      assert.equal(fs.readFileSync(input, 'utf8'), original);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('should reject malformed YAML without rewriting it', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'janos-invalid-'));
+    const input = path.join(dir, 'bad.yaml');
+    const malformed = 'kind: CronJob\nmetadata: [broken\n';
+    try {
+      fs.writeFileSync(input, malformed);
+      const result = convertFile(input);
+      assert.ok(result.error);
+      assert.equal(fs.readFileSync(input, 'utf8'), malformed);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it('should handle multi-document files cleanly', () => {
     const tmpFile = path.join(os.tmpdir(), `janos-multi-${Date.now()}.yaml`);
     const original = `
@@ -118,8 +157,8 @@ metadata:
   it('should convert Helm templates preserving Go templates via convertFile', () => {
     const tmpFile = path.join(os.tmpdir(), `janos-helm-template-${Date.now()}.yaml`);
     const templateContent = `{{- if .Values.enabled }}
-apiVersion: extensions/v1beta1
-kind: Deployment
+apiVersion: batch/v1beta1
+kind: CronJob
 metadata:
   name: {{ include "chart.name" . }}
 {{- end }}
@@ -130,7 +169,7 @@ metadata:
     assert.equal(res.changed, true);
 
     const updated = fs.readFileSync(tmpFile, 'utf8');
-    assert.match(updated, /apiVersion: apps\/v1/);
+    assert.match(updated, /apiVersion: batch\/v1/);
     assert.match(updated, /\{\{- if \.Values\.enabled \}\}/);
     assert.match(updated, /\{\{ include "chart\.name" \. \}\}/);
 

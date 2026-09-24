@@ -4,7 +4,8 @@
   "description": "Automated Kubernetes manifest migration tool for API version upgrades",
   "main": "src/app.js",
   "bin": {
-    "janos": "./bin/janos.js"
+    "janos": "./bin/janos.js",
+    "janos-hook": "./bin/janos-hook.js"
   },
   "scripts": {
     "test": "node --test",

@@ -57,56 +57,51 @@ function auditContent(content, sourceName = 'STDIN', options = {}) {
     };
   }
 
-  let docs;
-  try {
-    docs = yaml.parseDocuments(content);
-  } catch {
-    // If regular YAML parsing fails, try line-based Helm template audit as fallback
-    const fallbackItems = filterRemovedItems(helm.auditHelmTemplate(content, sourceName, options), options);
-    return {
-      documentsScanned: fallbackItems.length > 0 ? fallbackItems.length : 1,
-      items: fallbackItems,
-    };
-  }
+  const docs = yaml.parseDocuments(content);
 
   if (!docs || docs.length === 0) {
     return { documentsScanned: 0, items: [] };
   }
 
   for (const docNode of docs) {
-    const doc = toJS(docNode);
-    if (!doc || typeof doc !== 'object') continue;
-    documentsScanned++;
+    const root = toJS(docNode);
+    const resources = root && root.kind === 'List' && Array.isArray(root.items)
+      ? root.items
+      : [root];
+    for (const doc of resources) {
+      if (!doc || typeof doc !== 'object') continue;
+      documentsScanned++;
 
-    const rawKind = doc.kind;
-    const rawApiVersion = doc.apiVersion;
-    if (!rawKind || !rawApiVersion) continue;
+      const rawKind = doc.kind;
+      const rawApiVersion = doc.apiVersion;
+      if (!rawKind || !rawApiVersion) continue;
 
-    const kind = normalizeKind(rawKind);
-    const apiVersion = typeof rawApiVersion === 'string' ? rawApiVersion.trim() : rawApiVersion;
-    const name = (doc.metadata && doc.metadata.name) || 'unnamed';
-    const namespace = (doc.metadata && doc.metadata.namespace) || 'default';
+      const kind = normalizeKind(rawKind);
+      const apiVersion = typeof rawApiVersion === 'string' ? rawApiVersion.trim() : rawApiVersion;
+      const name = (doc.metadata && doc.metadata.name) || 'unnamed';
+      const namespace = (doc.metadata && doc.metadata.namespace) || 'default';
 
-    const rule = MIGRATION_RULES[kind];
-    if (rule && rule.legacy.includes(apiVersion)) {
-      const removedIn = getRemovalVersion(kind, apiVersion);
-      const remVer = parseVersionNum(removedIn);
-      const targetVer = options.targetVersion
-        ? parseVersionNum(options.targetVersion)
-        : parseVersionNum('1.32');
-      const status = remVer <= targetVer ? 'REMOVED' : 'DEPRECATED';
+      const rule = MIGRATION_RULES[kind];
+      if (rule && rule.legacy.includes(apiVersion)) {
+        const removedIn = getRemovalVersion(kind, apiVersion);
+        const remVer = parseVersionNum(removedIn);
+        const targetVer = options.targetVersion
+          ? parseVersionNum(options.targetVersion)
+          : parseVersionNum('1.32');
+        const status = remVer <= targetVer ? 'REMOVED' : 'DEPRECATED';
 
-      items.push({
-        kind,
-        name,
-        namespace,
-        currentApi: apiVersion,
-        targetApi: rule.target,
-        removedIn: `v${removedIn}`,
-        status,
-        file: sourceName,
-        warning: rule.warning || null,
-      });
+        items.push({
+          kind,
+          name,
+          namespace,
+          currentApi: apiVersion,
+          targetApi: rule.target,
+          removedIn: `v${removedIn}`,
+          status,
+          file: sourceName,
+          warning: rule.warning || null,
+        });
+      }
     }
   }
 
@@ -133,7 +128,12 @@ function auditFiles(filePaths, options = {}) {
     }
 
     const relPath = path.relative(process.cwd(), filePath) || filePath;
-    const result = auditContent(content, relPath, options);
+    let result;
+    try {
+      result = auditContent(content, relPath, options);
+    } catch (err) {
+      throw new Error(`Invalid YAML in ${relPath}: ${err.message}`);
+    }
     totalDocsScanned += result.documentsScanned;
     allItems.push(...result.items);
   }
@@ -217,7 +217,7 @@ function formatMarkdownTable(report) {
   }
 
   lines.push('');
-  lines.push('*Run `npx janos -d <dir>` to automatically upgrade these manifests in-place.*');
+  lines.push('*Run `janos -d <dir>` to upgrade supported manifests in-place. Review manual-migration diagnostics.*');
 
   return lines.join('\n');
 }

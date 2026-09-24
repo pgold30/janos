@@ -169,6 +169,10 @@ function parseArgs(inputArgv) {
   const chartTarget = values.chart || values.helm;
   const isCluster = Boolean(values.cluster || values.live);
 
+  if (values['target-version'] && !/^v?\d+\.\d+(?:\.\d+)?$/.test(values['target-version'])) {
+    throw new Error('--target-version must be a Kubernetes version such as 1.25');
+  }
+
   const result = {
     file: (values.file && values.file !== '-') ? path.resolve(BASE_DIR, values.file) : undefined,
     dir: values.dir ? path.resolve(BASE_DIR, values.dir) : undefined,

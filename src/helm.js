@@ -13,7 +13,7 @@
  * limitations under the License.
  */
 
-const { execSync } = require('child_process');
+const { execFileSync } = require('child_process');
 const fs = require('fs');
 const path = require('path');
 const { MIGRATION_RULES, normalizeKind, getRemovalVersion, parseVersionNum } = require('./migration');
@@ -43,7 +43,7 @@ function isHelmChart(dirPath) {
  */
 function isHelmInstalled() {
   try {
-    execSync('helm version --short', { stdio: 'ignore' });
+    execFileSync('helm', ['version', '--short'], { stdio: 'ignore' });
     return true;
   } catch {
     return false;
@@ -59,17 +59,17 @@ function isHelmInstalled() {
  */
 function renderChart(chartPath, options = {}) {
   const releaseName = options.releaseName || 'janos-release';
-  let cmd = `helm template ${releaseName} "${chartPath}"`;
+  const args = ['template', releaseName, chartPath];
 
   if (options.values) {
-    cmd += ` -f "${options.values}"`;
+    args.push('-f', options.values);
   }
   if (options.kubeVersion) {
-    cmd += ` --kube-version "${options.kubeVersion}"`;
+    args.push('--kube-version', options.kubeVersion);
   }
 
   try {
-    return execSync(cmd, { encoding: 'utf8', maxBuffer: 50 * 1024 * 1024 });
+    return execFileSync('helm', args, { encoding: 'utf8', maxBuffer: 50 * 1024 * 1024 });
   } catch (err) {
     const errorMsg = err.stderr ? err.stderr.toString() : err.message;
     throw new Error(`Failed to render Helm chart at "${chartPath}": ${errorMsg}`);
@@ -172,6 +172,12 @@ function migrateHelmTemplate(content, options = {}) {
   const lines = content.split(/\r?\n/);
   const events = [];
   let changed = false;
+  const needsStructure = new Set([
+    'PodSecurityPolicy', 'HorizontalPodAutoscaler', 'Ingress',
+    'CustomResourceDefinition', 'ValidatingWebhookConfiguration',
+    'MutatingWebhookConfiguration', 'CertificateSigningRequest',
+    'Deployment', 'DaemonSet', 'StatefulSet', 'ReplicaSet',
+  ]);
 
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i];
@@ -193,6 +199,17 @@ function migrateHelmTemplate(content, options = {}) {
       if (kind && MIGRATION_RULES[kind]) {
         const rule = MIGRATION_RULES[kind];
         if (rule.legacy.includes(apiVersion)) {
+          if (options.targetVersion &&
+              parseVersionNum(getRemovalVersion(kind, apiVersion)) > parseVersionNum(options.targetVersion)) {
+            continue;
+          }
+          if (needsStructure.has(kind)) {
+            events.push({
+              type: 'manual',
+              message: `${kind} in an unrendered Helm template needs structural review; render the chart and migrate the rendered manifest.`,
+            });
+            continue;
+          }
           const inlineComment = options.annotateInline || options['annotate-inline']
             ? ` # [janos]: migrated from ${apiVersion}`
             : '';

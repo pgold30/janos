@@ -143,6 +143,20 @@ function createUnifiedDiff(oldStr, newStr, filename = '') {
   return out.join('\n');
 }
 
+function hasMigrationChanges(events) {
+  return events.some((event) => event.type === 'migrated' || event.type === 'selector');
+}
+
+function needsManualMigration(events) {
+  return events.some((event) => event.type === 'manual');
+}
+
+function reportManualMigrations(events) {
+  for (const event of events) {
+    if (event.type === 'manual') console.error(`Manual migration required: ${event.message}`);
+  }
+}
+
 function convertFile(filePath, options = {}) {
   const events = [];
   const reporter = (event) => events.push(event);
@@ -211,14 +225,18 @@ function convertFile(filePath, options = {}) {
       if (generated.length > 0) {
         const newContent = yaml.dumpDocuments(generated);
         const targetOut = options.out || filePath.replace(/\.ya?ml$/, '.gateway.yaml');
-        if (!options.dryRun && !options.interactive) {
+        if (path.resolve(targetOut) === path.resolve(filePath)) {
+          throw new Error('Gateway output path must differ from the source Ingress file');
+        }
+        const changed = !fs.existsSync(targetOut) || fs.readFileSync(targetOut, 'utf8') !== newContent;
+        if (changed && !options.dryRun && !options.check && !options.interactive) {
           fs.writeFileSync(targetOut, newContent, 'utf8');
         }
         return {
           filePath,
           outPath: targetOut,
-          changed: true,
-          events: [{ type: 'migrated', message: `Converted Ingress to Gateway API -> ${targetOut}` }],
+          changed,
+          events: changed ? [{ type: 'migrated', message: `Converted Ingress to Gateway API -> ${targetOut}` }] : [],
           newContent,
           originalContent,
           error: null,
@@ -233,9 +251,8 @@ function convertFile(filePath, options = {}) {
       annotate: options.annotate || options.stamp,
       annotateInline: options.annotateInline || options['annotate-inline'],
     });
-    const newContent = yaml.dumpDocuments(migratedDocs);
-
-    const changed = originalContent.trim() !== newContent.trim();
+    const changed = hasMigrationChanges(events);
+    const newContent = changed ? yaml.dumpDocuments(migratedDocs) : originalContent;
 
     if (changed) {
       if (options.diff && !options.interactive) {
@@ -272,7 +289,14 @@ function handleStdin(args) {
   }
 
   if (args.audit) {
-    const auditRes = audit.auditContent(content, 'STDIN', args);
+    let auditRes;
+    try {
+      auditRes = audit.auditContent(content, 'STDIN', args);
+    } catch (err) {
+      console.error(`\x1b[31mError auditing STDIN:\x1b[0m ${err.message}`);
+      process.exitCode = 1;
+      return;
+    }
     const report = {
       filesScanned: 1,
       documentsScanned: auditRes.documentsScanned,
@@ -315,19 +339,22 @@ function handleStdin(args) {
       annotate: args.annotate || args.stamp,
       annotateInline: args.annotateInline || args['annotate-inline'],
     });
-    const newContent = yaml.dumpDocuments(migratedDocs);
+    const changed = hasMigrationChanges(events);
+    const needsWork = changed || needsManualMigration(events);
+    const newContent = changed ? yaml.dumpDocuments(migratedDocs) : content;
+    reportManualMigrations(events);
 
     if (args.diff) {
       const diff = createUnifiedDiff(content, newContent, 'STDIN');
       if (diff) console.log(diff);
-      if (args.check && content.trim() !== newContent.trim()) {
+      if (args.check && needsWork) {
         process.exitCode = 1;
       }
       return;
     }
 
     if (args.check) {
-      if (content.trim() !== newContent.trim()) {
+      if (needsWork) {
         process.exitCode = 1;
       }
       return;
@@ -335,8 +362,8 @@ function handleStdin(args) {
 
     process.stdout.write(newContent);
 
-    if (!args.quiet && events.length > 0) {
-      console.error(`\nMigrated ${events.length} resource(s) from STDIN.`);
+    if (!args.quiet && changed) {
+      console.error(`\nMigrated ${events.filter((event) => event.type === 'migrated').length} resource(s) from STDIN.`);
     }
   } catch (err) {
     console.error(`\x1b[31mError processing STDIN stream:\x1b[0m ${err.message}`);
@@ -413,18 +440,26 @@ function handleHelmChart(args) {
     reporter,
     targetVersion: args.targetVersion,
   });
-  const newContent = yaml.dumpDocuments(migratedDocs);
+  const changed = hasMigrationChanges(events);
+  const needsWork = changed || needsManualMigration(events);
+  const newContent = changed ? yaml.dumpDocuments(migratedDocs) : renderedYaml;
+  reportManualMigrations(events);
 
   if (args.diff) {
     const diff = createUnifiedDiff(renderedYaml, newContent, `Chart: ${path.basename(args.chart)}`);
     if (diff) console.log(diff);
-    if (args.check && renderedYaml.trim() !== newContent.trim()) {
+    if (args.check && needsWork) {
       process.exitCode = 1;
     }
     return;
   }
 
-  if (args.out) {
+  if (args.check) {
+    if (needsWork) process.exitCode = 1;
+    return;
+  }
+
+  if (args.out && !args.dryRun) {
     fs.writeFileSync(args.out, newContent, 'utf8');
     if (!args.quiet) console.error(`Rendered and migrated chart saved to: ${args.out}`);
   } else {
@@ -487,7 +522,12 @@ function handleCluster(args) {
     return;
   }
 
-  const docs = yaml.parseDocuments(liveYaml);
+  const docs = yaml.parseDocuments(liveYaml).flatMap((doc) => {
+    const resource = yaml.toPlainObject(doc);
+    return resource && resource.kind === 'List' && Array.isArray(resource.items)
+      ? resource.items
+      : [doc];
+  });
   const events = [];
   const reporter = (e) => events.push(e);
   const migratedDocs = migration.parseDocs(docs, {
@@ -496,18 +536,26 @@ function handleCluster(args) {
     annotate: args.annotate || args.stamp,
     annotateInline: args.annotateInline || args['annotate-inline'],
   });
-  const newContent = yaml.dumpDocuments(migratedDocs);
+  const changed = hasMigrationChanges(events);
+  const needsWork = changed || needsManualMigration(events);
+  const newContent = changed ? yaml.dumpDocuments(migratedDocs) : liveYaml;
+  reportManualMigrations(events);
 
   if (args.diff) {
     const diff = createUnifiedDiff(liveYaml, newContent, 'Live Cluster');
     if (diff) console.log(diff);
-    if (args.check && liveYaml.trim() !== newContent.trim()) {
+    if (args.check && needsWork) {
       process.exitCode = 1;
     }
     return;
   }
 
-  if (args.out) {
+  if (args.check) {
+    if (needsWork) process.exitCode = 1;
+    return;
+  }
+
+  if (args.out && !args.dryRun) {
     fs.writeFileSync(args.out, newContent, 'utf8');
     if (!args.quiet) console.error(`Migrated cluster manifests saved to: ${args.out}`);
   } else {
@@ -615,9 +663,22 @@ function main(argv, overrides = {}) {
     return;
   }
 
+  if (args.ingressToGateway && args.out && filesToProcess.length > 1) {
+    console.error('\x1b[31mError:\x1b[0m --out requires a single input file in Gateway mode.');
+    process.exitCode = 1;
+    return;
+  }
+
   // Pluto-style Audit mode
   if (args.audit) {
-    const report = audit.auditFiles(filesToProcess, args);
+    let report;
+    try {
+      report = audit.auditFiles(filesToProcess, args);
+    } catch (err) {
+      console.error(`\x1b[31mError auditing files:\x1b[0m ${err.message}`);
+      process.exitCode = 1;
+      return;
+    }
     const output = audit.formatReport(report, args.format);
     if (args.outputFile) {
       fs.writeFileSync(args.outputFile, output, 'utf8');
@@ -654,6 +715,7 @@ function main(argv, overrides = {}) {
   }
 
   let changedCount = 0;
+  let manualCount = 0;
   const warnings = [];
   let applyAll = false;
   let aborted = false;
@@ -665,14 +727,16 @@ function main(argv, overrides = {}) {
     if (res.error) {
       console.error(`\x1b[31m✖ Could not process file:\x1b[0m ${file}`);
       console.error(`  ${res.error.message}`);
+      process.exitCode = 1;
       continue;
     }
 
     if (res.events) {
       for (const ev of res.events) {
-        if (ev.type === 'warning') {
+        if (ev.type === 'warning' || ev.type === 'manual') {
           warnings.push({ file, message: ev.message });
         }
+        if (ev.type === 'manual') manualCount++;
       }
     }
 
@@ -680,11 +744,15 @@ function main(argv, overrides = {}) {
       if (args.interactive && !args.dryRun && !args.check) {
         let shouldWrite = applyAll;
         if (!applyAll) {
-          const rel = path.relative(process.cwd(), file) || file;
           let answered = false;
           while (!answered) {
-            const promptDiff = () => createUnifiedDiff(res.originalContent, res.newContent, rel);
-            const rawAns = askConfirmation(file, promptDiff, args);
+            const destination = res.outPath || file;
+            const rel = path.relative(process.cwd(), destination) || destination;
+            const before = res.outPath && fs.existsSync(destination)
+              ? fs.readFileSync(destination, 'utf8')
+              : res.outPath ? '' : res.originalContent;
+            const promptDiff = () => createUnifiedDiff(before, res.newContent, rel);
+            const rawAns = askConfirmation(destination, promptDiff, args);
             const ans = (rawAns || 'y').trim().toLowerCase();
             if (ans === 'y' || ans === 'yes' || ans === '') {
               shouldWrite = true;
@@ -713,7 +781,7 @@ function main(argv, overrides = {}) {
         if (aborted) break;
 
         if (shouldWrite) {
-          fs.writeFileSync(file, res.newContent, 'utf8');
+          fs.writeFileSync(res.outPath || file, res.newContent, 'utf8');
           changedCount++;
           if (!args.quiet) {
             console.log(`\x1b[33m•\x1b[0m Converted: ${file}`);
@@ -762,7 +830,7 @@ function main(argv, overrides = {}) {
     handleGitBlameIgnore(args.dir || (args.file ? path.dirname(args.file) : '.'), args.quiet);
   }
 
-  if (args.check && changedCount > 0) {
+  if (args.check && (changedCount > 0 || manualCount > 0)) {
     process.exitCode = 1;
   }
 }

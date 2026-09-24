@@ -38,31 +38,42 @@ runs:
 
     - name: Run Janos
       shell: bash
+      env:
+        JANOS_PATH: ${{ inputs.path }}
+        JANOS_ARGS: ${{ inputs.args }}
+        JANOS_CHECK: ${{ inputs.check }}
+        JANOS_TARGET_VERSION: ${{ inputs.target-version }}
+        JANOS_CHART: ${{ inputs.chart }}
+        JANOS_VALUES: ${{ inputs.values }}
       run: |
-        CMD="node ${{ github.action_path }}/bin/janos.js"
+        set -euo pipefail
+        npm ci --prefix "$GITHUB_ACTION_PATH" --ignore-scripts --silent
+        cmd=(node "$GITHUB_ACTION_PATH/bin/janos.js")
 
-        if [ -n "${{ inputs.chart }}" ]; then
-          CMD="$CMD --chart '${{ inputs.chart }}'"
-          if [ -n "${{ inputs.values }}" ]; then
-            CMD="$CMD --values '${{ inputs.values }}'"
+        if [ -n "$JANOS_CHART" ]; then
+          cmd+=(--chart "$JANOS_CHART")
+          if [ -n "$JANOS_VALUES" ]; then
+            cmd+=(--values "$JANOS_VALUES")
           fi
-        elif [ -n "${{ inputs.path }}" ]; then
-          if [ -d "${{ inputs.path }}" ]; then
-            CMD="$CMD -d '${{ inputs.path }}'"
-          elif [ -f "${{ inputs.path }}" ]; then
-            CMD="$CMD -f '${{ inputs.path }}'"
+        elif [ -n "$JANOS_PATH" ]; then
+          if [ -d "$JANOS_PATH" ]; then
+            cmd+=(-d "$JANOS_PATH")
+          elif [ -f "$JANOS_PATH" ]; then
+            cmd+=(-f "$JANOS_PATH")
+          else
+            echo "Janos input path does not exist: $JANOS_PATH" >&2
+            exit 1
           fi
         fi
 
-        if [ -n "${{ inputs.target-version }}" ]; then
-          CMD="$CMD --target-version '${{ inputs.target-version }}'"
+        if [ -n "$JANOS_TARGET_VERSION" ]; then
+          cmd+=(--target-version "$JANOS_TARGET_VERSION")
         fi
 
-        if [ "${{ inputs.check }}" = "true" ]; then
-          CMD="$CMD --check"
+        if [ "$JANOS_CHECK" = "true" ]; then
+          cmd+=(--check)
         fi
 
-        CMD="$CMD --annotations ${{ inputs.args }}"
-
-        echo "Executing: $CMD"
-        eval $CMD
+        read -r -a extra_args <<< "$JANOS_ARGS"
+        cmd+=(--annotations "${extra_args[@]}")
+        "${cmd[@]}"

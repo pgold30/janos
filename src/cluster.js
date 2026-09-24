@@ -13,7 +13,7 @@
  * limitations under the License.
  */
 
-const { execSync } = require('child_process');
+const { execFileSync } = require('child_process');
 
 /**
  * Checks whether the kubectl binary is available in PATH.
@@ -22,7 +22,7 @@ const { execSync } = require('child_process');
  */
 function isKubectlInstalled() {
   try {
-    execSync('kubectl version --client', { stdio: 'ignore' });
+    execFileSync('kubectl', ['version', '--client'], { stdio: 'ignore' });
     return true;
   } catch {
     return false;
@@ -54,19 +54,19 @@ function fetchClusterManifests(options = {}) {
     'networkpolicies',
   ].join(',');
 
-  let cmd = `kubectl get ${resources} -o yaml`;
+  const args = ['get', resources, '-o', 'yaml'];
   if (options.namespace) {
-    cmd += ` -n "${options.namespace}"`;
+    args.push('-n', options.namespace);
   } else {
-    cmd += ' -A';
+    args.push('-A');
   }
 
   if (options.kubeconfig) {
-    cmd += ` --kubeconfig "${options.kubeconfig}"`;
+    args.push('--kubeconfig', options.kubeconfig);
   }
 
   try {
-    return execSync(cmd, {
+    return execFileSync('kubectl', args, {
       encoding: 'utf8',
       maxBuffer: 50 * 1024 * 1024,
       stdio: ['ignore', 'pipe', 'pipe'],

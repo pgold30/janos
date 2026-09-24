@@ -8,6 +8,9 @@ const assert = require('node:assert/strict');
 const cli = require('./cli');
 
 describe('CLI argument parser', () => {
+  it('should reject invalid target versions', () => {
+    assert.throws(() => cli.parseArgs(['--target-version', 'latest']), /--target-version/);
+  });
   it('should parse -f / --file', () => {
     const res1 = cli.parseArgs(['-f', 'deploy.yaml']);
     assert.ok(res1.file.endsWith('deploy.yaml'));

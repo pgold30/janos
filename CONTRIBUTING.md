@@ -25,7 +25,7 @@ If you experience any issues or wish to report a Code of Conduct violation, plea
    ```
 2. Install dependencies and run tests:
    ```sh
-   npm install
+   npm ci
    npm test
    ```
 3. Add your changes with corresponding automated tests in `src/*.spec.js` or `src/*.test.js`.

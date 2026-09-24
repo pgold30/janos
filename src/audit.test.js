@@ -17,6 +17,15 @@ const {
 } = require('./audit');
 
 describe('Pluto-style Audit module', () => {
+  it('detects the removed policy/v1beta1 PodSecurityPolicy API', () => {
+    const result = auditContent('apiVersion: policy/v1beta1\nkind: PodSecurityPolicy\nmetadata:\n  name: old\n');
+    assert.equal(result.items.length, 1);
+    assert.equal(result.items[0].status, 'REMOVED');
+    assert.match(result.items[0].targetApi, /manual/);
+  });
+  it('should reject malformed YAML rather than report a clean audit', () => {
+    assert.throws(() => auditContent('metadata: [broken\n', 'bad.yaml'), /YAML|flow|end/i);
+  });
   it('should scan files and identify deprecated APIs', () => {
     const tmpFile = path.join(os.tmpdir(), `audit-test-${Date.now()}.yaml`);
     fs.writeFileSync(

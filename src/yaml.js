@@ -20,7 +20,11 @@ function parseDocuments(content) {
   if (typeof content !== 'string') {
     return [];
   }
-  return YAML.parseAllDocuments(content, { keepSourceTokens: true });
+  const docs = YAML.parseAllDocuments(content, { keepSourceTokens: true });
+  for (const doc of docs) {
+    if (doc.errors.length > 0) throw doc.errors[0];
+  }
+  return docs;
 }
 
 function dumpDocuments(docs) {
