@@ -114,6 +114,14 @@ janos --ingress-to-gateway --generate-gateway -f ingress.yaml --out gateway.yaml
 
 The generated file is separate from the source Ingress. The default name is `ingress.gateway.yaml`. Review `parentRefs`, Gateway class, TLS, backend ports, and annotation translations before applying it. Use `--dry-run` or `--check` to avoid writing output.
 
+For controller-specific annotations or CRDs, also run [ingress2gateway](https://github.com/kubernetes-sigs/ingress2gateway) with the provider that owns the Ingress. For example, with its `ingress-nginx` provider installed:
+
+```sh
+ingress2gateway print --providers=ingress-nginx --input-file=ingress.yaml > ingress-provider.gateway.yaml
+```
+
+Compare its output and untranslated-feature warnings with Janos's starter route before choosing what to apply. Check ingress2gateway's current [supported providers](https://github.com/kubernetes-sigs/ingress2gateway#supported-providers) for your controller.
+
 ### 6. Track Provenance & Keep Git Blame Clean (`--annotate`, `--git-blame-ignore`)
 Keep track of what changed without polluting your git history:
 ```sh
