@@ -16,7 +16,7 @@
 const { execFileSync } = require('child_process');
 const fs = require('fs');
 const path = require('path');
-const { MIGRATION_RULES, normalizeKind, getRemovalVersion, parseVersionNum } = require('./migration');
+const { MIGRATION_RULES, normalizeKind, getRemovalVersion, parseVersionNum, LATEST_K8S_VERSION } = require('./migration');
 
 /**
  * Checks if a directory is a Helm chart (contains Chart.yaml or Chart.yml).
@@ -101,6 +101,7 @@ function auditHelmTemplate(content, filePath = 'template.yaml', options = {}) {
   let currentKind = null;
   let currentName = 'unnamed';
   let currentApi = null;
+  let currentLine = null;
 
   function flushResource() {
     if (currentKind && currentApi && MIGRATION_RULES[currentKind]) {
@@ -110,10 +111,10 @@ function auditHelmTemplate(content, filePath = 'template.yaml', options = {}) {
         const remVer = parseVersionNum(removedIn);
         const targetVer = options.targetVersion
           ? parseVersionNum(options.targetVersion)
-          : parseVersionNum('1.32');
+          : parseVersionNum(LATEST_K8S_VERSION);
         const status = remVer <= targetVer ? 'REMOVED' : 'DEPRECATED';
 
-        items.push({
+        const item = {
           kind: currentKind,
           name: currentName,
           namespace: 'default',
@@ -124,12 +125,17 @@ function auditHelmTemplate(content, filePath = 'template.yaml', options = {}) {
           file: filePath,
           warning: rule.warning || null,
           isHelmTemplate: true,
-        });
+        };
+        if (currentLine !== null) {
+          item.line = currentLine;
+        }
+        items.push(item);
       }
     }
     currentKind = null;
     currentName = 'unnamed';
     currentApi = null;
+    currentLine = null;
   }
 
   for (let i = 0; i < lines.length; i++) {
@@ -143,6 +149,7 @@ function auditHelmTemplate(content, filePath = 'template.yaml', options = {}) {
     const apiMatch = line.match(/^\s*apiVersion:\s*["']?([A-Za-z0-9_./-]+)["']?/);
     if (apiMatch) {
       currentApi = apiMatch[1].trim();
+      currentLine = i + 1;
     }
 
     const kindMatch = line.match(/^\s*kind:\s*["']?([A-Za-z0-9_-]+)["']?/);

@@ -21,8 +21,20 @@ const migration = require('./migration');
 const cli = require('./cli');
 const audit = require('./audit');
 const helm = require('./helm');
+const kustomize = require('./kustomize');
 const cluster = require('./cluster');
 const { convertIngressToGateway } = require('./gateway');
+
+function globToRegExp(pattern) {
+  let clean = pattern.replace(/\\/g, '/').replace(/^\/+/, '').replace(/\/+$/, '');
+  const escaped = clean
+    .replace(/[.+^${}()|[\]\\]/g, '\\$&')
+    .replace(/\*\*/g, '__DOUBLE_STAR__')
+    .replace(/\*/g, '[^/]*')
+    .replace(/\?/g, '[^/]')
+    .replace(/__DOUBLE_STAR__/g, '.*');
+  return new RegExp(`^${escaped}$`);
+}
 
 function loadIgnorePatterns(targetDir, extraIgnore) {
   const patterns = ['.git', 'node_modules', '_helpers.tpl', 'NOTES.txt'];
@@ -47,12 +59,22 @@ function loadIgnorePatterns(targetDir, extraIgnore) {
   return patterns;
 }
 
-function shouldIgnore(entryName, fullPath, patterns) {
-  const norm = fullPath.replace(/\\/g, '/');
-  for (const pattern of patterns) {
-    if (pattern.startsWith('*.')) {
-      if (norm.endsWith(pattern.slice(1))) return true;
-    } else if (norm.includes(pattern) || entryName === pattern) {
+function shouldIgnore(entryName, relPath, patterns) {
+  const normRel = relPath.replace(/\\/g, '/').replace(/^\.\//, '');
+  const segments = normRel.split('/');
+  for (const rawPattern of patterns) {
+    const pattern = rawPattern.replace(/\\/g, '/').replace(/^\/+/, '').replace(/\/+$/, '');
+    if (!pattern) continue;
+    if (pattern.includes('*') || pattern.includes('?')) {
+      const regex = globToRegExp(pattern);
+      if (regex.test(normRel) || (!pattern.includes('/') && regex.test(entryName))) {
+        return true;
+      }
+    } else if (pattern.includes('/')) {
+      if (normRel === pattern || normRel.startsWith(pattern + '/')) {
+        return true;
+      }
+    } else if (entryName === pattern || segments.includes(pattern)) {
       return true;
     }
   }
@@ -76,7 +98,8 @@ function findYamlFiles(targetDir, options = {}) {
         continue;
       }
       const fullPath = path.join(current, entry.name);
-      if (shouldIgnore(entry.name, fullPath, ignorePatterns)) {
+      const relPath = path.relative(targetDir, fullPath);
+      if (shouldIgnore(entry.name, relPath, ignorePatterns)) {
         continue;
       }
       if (entry.isDirectory()) {
@@ -100,8 +123,25 @@ function createUnifiedDiff(oldStr, newStr, filename = '') {
 
   if (oldStr === newStr) return null;
 
+  const out = [];
+  out.push(`\x1b[1m--- a/${filename}\x1b[0m`);
+  out.push(`\x1b[1m+++ b/${filename}\x1b[0m`);
+
   const n = a.length;
   const m = b.length;
+
+  // Guard memory on huge multi-thousand-line files by falling back to a simple line diff
+  if (n * m > 4_000_000) {
+    const maxLen = Math.max(n, m);
+    for (let k = 0; k < maxLen; k++) {
+      if (a[k] !== b[k]) {
+        if (k < n) out.push(`\x1b[31m- ${a[k]}\x1b[0m`);
+        if (k < m) out.push(`\x1b[32m+ ${b[k]}\x1b[0m`);
+      }
+    }
+    return out.join('\n');
+  }
+
   const dp = Array.from({ length: n + 1 }, () => new Int32Array(m + 1));
 
   for (let i = 0; i < n; i++) {
@@ -119,21 +159,18 @@ function createUnifiedDiff(oldStr, newStr, filename = '') {
   let j = m;
   while (i > 0 || j > 0) {
     if (i > 0 && j > 0 && a[i - 1] === b[j - 1]) {
-      edits.unshift({ type: 'common', line: a[i - 1] });
+      edits.push({ type: 'common', line: a[i - 1] });
       i--;
       j--;
     } else if (j > 0 && (i === 0 || dp[i][j - 1] >= dp[i - 1][j])) {
-      edits.unshift({ type: 'added', line: b[j - 1] });
+      edits.push({ type: 'added', line: b[j - 1] });
       j--;
     } else if (i > 0 && (j === 0 || dp[i][j - 1] < dp[i - 1][j])) {
-      edits.unshift({ type: 'removed', line: a[i - 1] });
+      edits.push({ type: 'removed', line: a[i - 1] });
       i--;
     }
   }
-
-  const out = [];
-  out.push(`\x1b[1m--- a/${filename}\x1b[0m`);
-  out.push(`\x1b[1m+++ b/${filename}\x1b[0m`);
+  edits.reverse();
 
   edits.forEach((e) => {
     if (e.type === 'added') out.push(`\x1b[32m+ ${e.line}\x1b[0m`);
@@ -217,6 +254,7 @@ function convertFile(filePath, options = {}) {
           const routes = convertIngressToGateway(plain, {
             generateGateway: options.generateGateway,
             annotate: options.annotate || options.stamp,
+            reporter,
           });
           generated.push(...routes);
         }
@@ -232,17 +270,20 @@ function convertFile(filePath, options = {}) {
         if (changed && !options.dryRun && !options.check && !options.interactive) {
           fs.writeFileSync(targetOut, newContent, 'utf8');
         }
+        if (changed) {
+          events.push({ type: 'migrated', message: `Converted Ingress to Gateway API -> ${targetOut}` });
+        }
         return {
           filePath,
           outPath: targetOut,
           changed,
-          events: changed ? [{ type: 'migrated', message: `Converted Ingress to Gateway API -> ${targetOut}` }] : [],
+          events,
           newContent,
           originalContent,
           error: null,
         };
       }
-      return { filePath, changed: false, events: [], newContent: originalContent, originalContent, error: null };
+      return { filePath, changed: false, events, newContent: originalContent, originalContent, error: null };
     }
 
     const migratedDocs = migration.parseDocs(docs, {
@@ -311,7 +352,7 @@ function handleStdin(args) {
       console.log(output);
     }
 
-    if (args.annotations && args.format !== 'json') {
+    if (args.annotations && !['json', 'sarif'].includes((args.format || '').toLowerCase())) {
       const annotations = audit.formatGitHubAnnotations(report);
       if (annotations) console.log(annotations);
     }
@@ -329,9 +370,56 @@ function handleStdin(args) {
   }
 
   try {
+    if (helm.isHelmTemplate(content)) {
+      const res = helm.migrateHelmTemplate(content, args);
+      const needsWork = res.changed || needsManualMigration(res.events);
+      reportManualMigrations(res.events);
+      if (args.diff) {
+        const diff = createUnifiedDiff(content, res.content, 'STDIN');
+        if (diff) console.log(diff);
+        if (args.check && needsWork) process.exitCode = 1;
+        return;
+      }
+      if (args.check) {
+        if (needsWork) process.exitCode = 1;
+        return;
+      }
+      process.stdout.write(res.content);
+      return;
+    }
+
     const docs = yaml.parseDocuments(content);
     const events = [];
     const reporter = (e) => events.push(e);
+
+    if (args.ingressToGateway) {
+      const generated = [];
+      for (const docNode of docs) {
+        const plain = yaml.toPlainObject(docNode);
+        if (plain && plain.kind === 'Ingress') {
+          generated.push(
+            ...convertIngressToGateway(plain, {
+              generateGateway: args.generateGateway,
+              annotate: args.annotate || args.stamp,
+              reporter,
+            }),
+          );
+        }
+      }
+      const newContent = generated.length > 0 ? yaml.dumpDocuments(generated) : content;
+      if (args.diff) {
+        const diff = createUnifiedDiff(content, newContent, 'STDIN');
+        if (diff) console.log(diff);
+        if (args.check && generated.length > 0) process.exitCode = 1;
+        return;
+      }
+      if (args.check) {
+        if (generated.length > 0) process.exitCode = 1;
+        return;
+      }
+      process.stdout.write(newContent);
+      return;
+    }
 
     const migratedDocs = migration.parseDocs(docs, {
       reporter,
@@ -416,7 +504,7 @@ function handleHelmChart(args) {
       console.log(output);
     }
 
-    if (args.annotations && args.format !== 'json') {
+    if (args.annotations && !['json', 'sarif'].includes((args.format || '').toLowerCase())) {
       const annotations = audit.formatGitHubAnnotations(report);
       if (annotations) console.log(annotations);
     }
@@ -439,6 +527,8 @@ function handleHelmChart(args) {
   const migratedDocs = migration.parseDocs(docs, {
     reporter,
     targetVersion: args.targetVersion,
+    annotate: args.annotate || args.stamp,
+    annotateInline: args.annotateInline || args['annotate-inline'],
   });
   const changed = hasMigrationChanges(events);
   const needsWork = changed || needsManualMigration(events);
@@ -467,6 +557,101 @@ function handleHelmChart(args) {
   }
 }
 
+function handleKustomize(args) {
+  if (!kustomize.isKustomizeAvailable()) {
+    console.error('\x1b[31mError:\x1b[0m Neither "kustomize" nor "kubectl" was found in PATH. Install Kustomize or kubectl to render Kustomize directories.');
+    process.exitCode = 1;
+    return;
+  }
+
+  if (!fs.existsSync(args.kustomize)) {
+    console.error(`\x1b[31mError:\x1b[0m Kustomize path does not exist: ${args.kustomize}`);
+    process.exitCode = 1;
+    return;
+  }
+
+  if (!args.quiet && !['json', 'sarif'].includes((args.format || '').toLowerCase())) {
+    console.error(`Rendering Kustomize directory at "${args.kustomize}"...`);
+  }
+
+  let renderedYaml;
+  try {
+    renderedYaml = kustomize.renderKustomize(args.kustomize);
+  } catch (err) {
+    console.error(`\x1b[31mError:\x1b[0m ${err.message}`);
+    process.exitCode = 1;
+    return;
+  }
+
+  if (args.audit) {
+    const auditRes = audit.auditContent(renderedYaml, path.basename(args.kustomize), args);
+    const report = {
+      filesScanned: 1,
+      documentsScanned: auditRes.documentsScanned,
+      deprecatedCount: auditRes.items.length,
+      items: auditRes.items,
+    };
+    const output = audit.formatReport(report, args.format);
+    if (args.outputFile) {
+      fs.writeFileSync(args.outputFile, output, 'utf8');
+      if (!args.quiet) console.error(`Audit report written to: ${args.outputFile}`);
+    } else {
+      console.log(output);
+    }
+
+    if (args.annotations && !['json', 'sarif'].includes((args.format || '').toLowerCase())) {
+      const annotations = audit.formatGitHubAnnotations(report);
+      if (annotations) console.log(annotations);
+    }
+
+    if (process.env.GITHUB_STEP_SUMMARY && (args.format === 'markdown' || args.format === 'md')) {
+      try {
+        fs.appendFileSync(process.env.GITHUB_STEP_SUMMARY, output + '\n');
+      } catch {}
+    }
+
+    if (args.check && report.deprecatedCount > 0) {
+      process.exitCode = 1;
+    }
+    return;
+  }
+
+  const docs = yaml.parseDocuments(renderedYaml);
+  const events = [];
+  const reporter = (e) => events.push(e);
+  const migratedDocs = migration.parseDocs(docs, {
+    reporter,
+    targetVersion: args.targetVersion,
+    annotate: args.annotate || args.stamp,
+    annotateInline: args.annotateInline || args['annotate-inline'],
+  });
+  const changed = hasMigrationChanges(events);
+  const needsWork = changed || needsManualMigration(events);
+  const newContent = changed ? yaml.dumpDocuments(migratedDocs) : renderedYaml;
+  reportManualMigrations(events);
+
+  if (args.diff) {
+    const diff = createUnifiedDiff(renderedYaml, newContent, `Kustomize: ${path.basename(args.kustomize)}`);
+    if (diff) console.log(diff);
+    if (args.check && needsWork) {
+      process.exitCode = 1;
+    }
+    return;
+  }
+
+  if (args.check) {
+    if (needsWork) process.exitCode = 1;
+    return;
+  }
+
+  if (args.out && !args.dryRun) {
+    fs.writeFileSync(args.out, newContent, 'utf8');
+    if (!args.quiet) console.error(`Rendered and migrated Kustomize output saved to: ${args.out}`);
+  } else {
+    process.stdout.write(newContent);
+  }
+}
+
 function handleCluster(args) {
   if (!cluster.isKubectlInstalled()) {
     console.error('\x1b[31mError:\x1b[0m "kubectl" CLI not found in PATH. Install kubectl (https://kubernetes.io/docs/tasks/tools/) to query active clusters.');
@@ -474,7 +659,7 @@ function handleCluster(args) {
     return;
   }
 
-  if (!args.quiet && args.format !== 'json') {
+  if (!args.quiet && !['json', 'sarif'].includes((args.format || '').toLowerCase())) {
     const nsMsg = args.namespace ? `in namespace "${args.namespace}"` : 'across all namespaces';
     console.error(`Connecting to Kubernetes cluster via kubectl (${nsMsg})...`);
   }
@@ -498,6 +683,22 @@ function handleCluster(args) {
       process.exitCode = 1;
       return;
     }
+
+    if (args.helmReleases) {
+      try {
+        const secretsYaml = cluster.fetchHelmReleaseSecrets(args);
+        const helmSources = cluster.collectHelmReleaseSources(secretsYaml);
+        sources.records.push(...helmSources.records);
+        sources.coverage.resources += helmSources.records.length;
+        sources.coverage.original += helmSources.records.length;
+        sources.coverage.invalidOriginal += helmSources.invalidReleases;
+      } catch (err) {
+        if (!args.quiet) {
+          console.error(`\x1b[33mWarning:\x1b[0m Could not read Helm release secrets: ${err.message}`);
+        }
+      }
+    }
+
     const auditResults = sources.records.map(({ resource, source }) =>
       audit.auditContent(JSON.stringify(resource), `Live Cluster (${source})`, args));
     const report = {
@@ -515,7 +716,7 @@ function handleCluster(args) {
       console.log(output);
     }
 
-    if (args.annotations && args.format !== 'json') {
+    if (args.annotations && !['json', 'sarif'].includes((args.format || '').toLowerCase())) {
       const annotations = audit.formatGitHubAnnotations(report);
       if (annotations) console.log(annotations);
     }
@@ -637,6 +838,12 @@ function main(argv, overrides = {}) {
     return;
   }
 
+  // 2b. Kustomize Mode
+  if (args.kustomize) {
+    handleKustomize(args);
+    return;
+  }
+
   // 3. Live Cluster Mode
   if (args.cluster || args.live) {
     handleCluster(args);
@@ -644,7 +851,7 @@ function main(argv, overrides = {}) {
   }
 
   if (!args.file && !args.dir) {
-    console.error('\x1b[31mError:\x1b[0m argument -d, -f, --chart, --cluster, or STDIN must be provided.');
+    console.error('\x1b[31mError:\x1b[0m argument -d, -f, --chart, --kustomize, --cluster, or STDIN must be provided.');
     console.log(cli.getHelpText());
     process.exitCode = 1;
     return;
@@ -698,7 +905,7 @@ function main(argv, overrides = {}) {
       console.log(output);
     }
 
-    if (args.annotations && args.format !== 'json') {
+    if (args.annotations && !['json', 'sarif'].includes((args.format || '').toLowerCase())) {
       const annotations = audit.formatGitHubAnnotations(report);
       if (annotations) console.log(annotations);
     }
@@ -902,6 +1109,7 @@ module.exports = {
   createUnifiedDiff,
   handleStdin,
   handleHelmChart,
+  handleKustomize,
   handleCluster,
   askConfirmation,
   handleGitBlameIgnore,

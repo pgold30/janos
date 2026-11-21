@@ -177,4 +177,96 @@ describe('Ingress to Gateway API converter', () => {
     assert.equal(filter.requestRedirect.port, 443);
     assert.equal(filter.requestRedirect.statusCode, 301);
   });
+
+  it('parses permanent-redirect URL into scheme, hostname, port, and path', () => {
+    const ingress = {
+      apiVersion: 'networking.k8s.io/v1',
+      kind: 'Ingress',
+      metadata: {
+        name: 'redirect-app',
+        annotations: {
+          'nginx.ingress.kubernetes.io/permanent-redirect': 'https://new.example.com:8443/v2',
+        },
+      },
+      spec: {
+        rules: [
+          {
+            http: {
+              paths: [{ path: '/', backend: { service: { name: 'app', port: { number: 80 } } } }],
+            },
+          },
+        ],
+      },
+    };
+    const [route] = convertIngressToGateway(ingress);
+    const filter = route.spec.rules[0].filters.find((f) => f.type === 'RequestRedirect');
+    assert.equal(filter.requestRedirect.scheme, 'https');
+    assert.equal(filter.requestRedirect.hostname, 'new.example.com');
+    assert.equal(filter.requestRedirect.port, 8443);
+    assert.deepEqual(filter.requestRedirect.path, {
+      type: 'ReplaceFullPath',
+      replaceFullPath: '/v2',
+    });
+  });
+
+  it('splits multi-host Ingress into isolated HTTPRoutes and creates per-host TLS listeners', () => {
+    const ingress = {
+      apiVersion: 'networking.k8s.io/v1',
+      kind: 'Ingress',
+      metadata: { name: 'multi' },
+      spec: {
+        ingressClassName: 'envoy',
+        tls: [{ hosts: ['api.example.com', 'web.example.com'], secretName: 'shared-tls' }],
+        rules: [
+          {
+            host: 'api.example.com',
+            http: { paths: [{ path: '/v1', backend: { service: { name: 'api-svc', port: { number: 8080 } } } }] },
+          },
+          {
+            host: 'web.example.com',
+            http: { paths: [{ path: '/', backend: { service: { name: 'web-svc', port: { number: 80 } } } }] },
+          },
+        ],
+      },
+    };
+    const resources = convertIngressToGateway(ingress, { generateGateway: true });
+    const routes = resources.filter((r) => r.kind === 'HTTPRoute');
+    const gateway = resources.find((r) => r.kind === 'Gateway');
+    assert.equal(routes.length, 2);
+    assert.deepEqual(routes[0].spec.hostnames, ['api.example.com']);
+    assert.equal(routes[0].spec.rules[0].backendRefs[0].name, 'api-svc');
+    assert.deepEqual(routes[1].spec.hostnames, ['web.example.com']);
+    assert.equal(routes[1].spec.rules[0].backendRefs[0].name, 'web-svc');
+    assert.equal(gateway.spec.listeners.length, 3); // 1 HTTP + 2 HTTPS
+    assert.equal(gateway.spec.listeners[1].hostname, 'api.example.com');
+    assert.equal(gateway.spec.listeners[2].hostname, 'web.example.com');
+  });
+
+  it('emits warnings for named ports, regex rewrites, and unsupported NGINX annotations', () => {
+    const warnings = [];
+    const ingress = {
+      apiVersion: 'networking.k8s.io/v1',
+      kind: 'Ingress',
+      metadata: {
+        name: 'complex',
+        annotations: {
+          'nginx.ingress.kubernetes.io/rewrite-target': '/$2',
+          'nginx.ingress.kubernetes.io/configuration-snippet': 'more_set_headers "X-Test: 1";',
+        },
+      },
+      spec: {
+        rules: [
+          {
+            http: {
+              paths: [{ path: '/app(/|$)(.*)', backend: { service: { name: 'svc', port: { name: 'http-web' } } } }],
+            },
+          },
+        ],
+      },
+    };
+    convertIngressToGateway(ingress, { reporter: (ev) => warnings.push(ev) });
+    assert.ok(warnings.some((w) => /named port/i.test(w.message)));
+    assert.ok(warnings.some((w) => /capture group/i.test(w.message)));
+    assert.ok(warnings.some((w) => /configuration-snippet/i.test(w.message)));
+  });
 });

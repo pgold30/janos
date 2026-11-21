@@ -27,6 +27,9 @@ inputs:
   values:
     description: 'Values file for Helm chart rendering'
     required: false
+  kustomize:
+    description: 'Path to a Kustomize directory to render and audit'
+    required: false
 
 runs:
   using: 'composite'
@@ -34,7 +37,7 @@ runs:
     - name: Set up Node.js
       uses: actions/setup-node@v4
       with:
-        node-version: '20'
+        node-version: '22'
 
     - name: Run Janos
       shell: bash
@@ -45,6 +48,7 @@ runs:
         JANOS_TARGET_VERSION: ${{ inputs.target-version }}
         JANOS_CHART: ${{ inputs.chart }}
         JANOS_VALUES: ${{ inputs.values }}
+        JANOS_KUSTOMIZE: ${{ inputs.kustomize }}
       run: |
         set -euo pipefail
         npm ci --prefix "$GITHUB_ACTION_PATH" --ignore-scripts --silent
@@ -55,6 +59,8 @@ runs:
           if [ -n "$JANOS_VALUES" ]; then
             cmd+=(--values "$JANOS_VALUES")
           fi
+        elif [ -n "$JANOS_KUSTOMIZE" ]; then
+          cmd+=(--kustomize "$JANOS_KUSTOMIZE")
         elif [ -n "$JANOS_PATH" ]; then
           if [ -d "$JANOS_PATH" ]; then
             cmd+=(-d "$JANOS_PATH")
@@ -74,6 +80,12 @@ runs:
           cmd+=(--check)
         fi
 
-        read -r -a extra_args <<< "$JANOS_ARGS"
-        cmd+=(--annotations "${extra_args[@]}")
+        extra_args=()
+        if [ -n "$JANOS_ARGS" ]; then
+          read -r -a extra_args <<< "$JANOS_ARGS"
+        fi
+        if [[ ! " ${JANOS_ARGS} " =~ --format[[:space:]=]+(json|sarif) ]]; then
+          cmd+=(--annotations)
+        fi
+        cmd+=("${extra_args[@]}")
         "${cmd[@]}"

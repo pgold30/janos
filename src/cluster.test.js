@@ -242,4 +242,52 @@ metadata:
       cluster.isKubectlInstalled = originalIsInstalled;
     }
   });
+
+  it('decodes Helm v3 release Secrets and audits original deployed manifests', () => {
+    const zlib = require('zlib');
+    const makeReleaseSecret = (name, version, status, manifest) => {
+      const payload = JSON.stringify({
+        name,
+        namespace: 'prod',
+        version,
+        info: { status },
+        manifest,
+      });
+      const gzipped = zlib.gzipSync(Buffer.from(payload, 'utf8'));
+      const helmB64 = gzipped.toString('base64');
+      const k8sSecretB64 = Buffer.from(helmB64, 'utf8').toString('base64');
+      return {
+        apiVersion: 'v1',
+        kind: 'Secret',
+        type: 'helm.sh/release.v1',
+        metadata: { name: `sh.helm.release.v1.${name}.v${version}`, namespace: 'prod' },
+        data: { release: k8sSecretB64 },
+      };
+    };
+
+    const deployed = makeReleaseSecret(
+      'payments',
+      2,
+      'deployed',
+      'apiVersion: batch/v1beta1\nkind: CronJob\nmetadata:\n  name: settle\n',
+    );
+    const superseded = makeReleaseSecret(
+      'payments',
+      1,
+      'superseded',
+      'apiVersion: extensions/v1beta1\nkind: Ingress\nmetadata:\n  name: old-ing\n',
+    );
+
+    const decoded = cluster.decodeHelmReleaseSecret(deployed);
+    assert.equal(decoded.name, 'payments');
+    assert.equal(decoded.version, 2);
+
+    const listYaml = JSON.stringify({ kind: 'List', items: [deployed, superseded] });
+    const collected = cluster.collectHelmReleaseSources(listYaml);
+    assert.equal(collected.releasesScanned, 1);
+    assert.equal(collected.records.length, 1);
+    assert.equal(collected.records[0].resource.kind, 'CronJob');
+    assert.equal(collected.records[0].resource.apiVersion, 'batch/v1beta1');
+    assert.match(collected.records[0].source, /helm:prod\/payments@v2/);
+  });
 });

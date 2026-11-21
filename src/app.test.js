@@ -210,4 +210,23 @@ spec:
 
     fs.rmSync(tmpDir, { recursive: true, force: true });
   });
+
+  it('matches .janosignore patterns against relative paths without false-positive ancestor matches', () => {
+    const parentDir = fs.mkdtempSync(path.join(os.tmpdir(), 'janos-legacy-parent-'));
+    const projectDir = path.join(parentDir, 'manifests');
+    fs.mkdirSync(path.join(projectDir, 'generated'), { recursive: true });
+    fs.mkdirSync(path.join(projectDir, 'app'), { recursive: true });
+    fs.writeFileSync(path.join(projectDir, '.janosignore'), 'legacy\ngenerated/*.yaml\n');
+    fs.writeFileSync(path.join(projectDir, 'app', 'deploy.yaml'), 'kind: Deployment\n');
+    fs.writeFileSync(path.join(projectDir, 'generated', 'auto.yaml'), 'kind: Deployment\n');
+
+    try {
+      // Even though parentDir contains "legacy" in its path, app/deploy.yaml must NOT be ignored!
+      const files = findYamlFiles(projectDir);
+      assert.equal(files.length, 1);
+      assert.ok(files[0].endsWith(path.join('app', 'deploy.yaml')));
+    } finally {
+      fs.rmSync(parentDir, { recursive: true, force: true });
+    }
+  });
 });

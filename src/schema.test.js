@@ -143,4 +143,197 @@ describe('schema-aware migration', () => {
       fs.rmSync(dir, { recursive: true, force: true });
     }
   });
+
+  it('blocks PodDisruptionBudget with empty selector {} to avoid matching all pods in v1', () => {
+    const { result, events } = migrate({
+      apiVersion: 'policy/v1beta1',
+      kind: 'PodDisruptionBudget',
+      metadata: { name: 'empty-pdb' },
+      spec: { minAvailable: 1, selector: {} },
+    });
+    assert.equal(result.apiVersion, 'policy/v1beta1');
+    assert.equal(events[0].type, 'manual');
+    assert.match(events[0].message, /ALL pods/);
+  });
+
+  it('migrates PodDisruptionBudget with explicit selector cleanly', () => {
+    const { result, events } = migrate({
+      apiVersion: 'policy/v1beta1',
+      kind: 'PodDisruptionBudget',
+      metadata: { name: 'app-pdb' },
+      spec: { minAvailable: 1, selector: { matchLabels: { app: 'web' } } },
+    });
+    assert.equal(result.apiVersion, 'policy/v1');
+    assert.equal(events[0].type, 'migrated');
+  });
+
+  it('migrates EndpointSlice topology hostname and zone fields to v1', () => {
+    const { result, events } = migrate({
+      apiVersion: 'discovery.k8s.io/v1beta1',
+      kind: 'EndpointSlice',
+      metadata: { name: 'my-slice' },
+      addressType: 'IPv4',
+      endpoints: [
+        {
+          addresses: ['10.0.0.1'],
+          topology: {
+            'kubernetes.io/hostname': 'node-1',
+            'topology.kubernetes.io/zone': 'us-east-1a',
+          },
+        },
+      ],
+    });
+    assert.equal(result.apiVersion, 'discovery.k8s.io/v1');
+    assert.equal(events[0].type, 'migrated');
+    assert.equal(result.endpoints[0].nodeName, 'node-1');
+    assert.equal(result.endpoints[0].zone, 'us-east-1a');
+    assert.equal(result.endpoints[0].topology, undefined);
+  });
+
+  it('flags EndpointSlice with custom topology keys for manual migration', () => {
+    const { result, events } = migrate({
+      apiVersion: 'discovery.k8s.io/v1beta1',
+      kind: 'EndpointSlice',
+      metadata: { name: 'custom-slice' },
+      endpoints: [
+        {
+          addresses: ['10.0.0.1'],
+          topology: { 'custom.io/rack': 'rack-7' },
+        },
+      ],
+    });
+    assert.equal(result.apiVersion, 'discovery.k8s.io/v1beta1');
+    assert.equal(events[0].type, 'manual');
+    assert.match(events[0].message, /custom\.io\/rack/);
+  });
+
+  it('validates Event type and legacy fields during v1beta1 -> v1 migration', () => {
+    const badType = migrate({
+      apiVersion: 'events.k8s.io/v1beta1',
+      kind: 'Event',
+      metadata: { name: 'bad-ev' },
+      type: 'Error',
+    });
+    assert.equal(badType.result.apiVersion, 'events.k8s.io/v1beta1');
+    assert.equal(badType.events[0].type, 'manual');
+
+    const legacyFields = migrate({
+      apiVersion: 'events.k8s.io/v1beta1',
+      kind: 'Event',
+      metadata: { name: 'legacy-ev' },
+      deprecatedCount: 3,
+    });
+    assert.equal(legacyFields.result.apiVersion, 'events.k8s.io/v1beta1');
+    assert.equal(legacyFields.events[0].type, 'manual');
+    assert.match(legacyFields.events[0].message, /eventTime/);
+  });
+
+  it('uses ImplementationSpecific pathType for regex Ingress paths and validates backends atomically', () => {
+    const regexIng = migrate({
+      apiVersion: 'extensions/v1beta1',
+      kind: 'Ingress',
+      metadata: { name: 'regex-ing' },
+      spec: {
+        rules: [
+          {
+            http: {
+              paths: [
+                { path: '/api(/|$)(.*)', backend: { serviceName: 'api', servicePort: 8080 } },
+                { path: '/health', backend: { serviceName: 'api', servicePort: 8080 } },
+              ],
+            },
+          },
+        ],
+      },
+    });
+    assert.equal(regexIng.result.apiVersion, 'networking.k8s.io/v1');
+    assert.equal(regexIng.result.spec.rules[0].http.paths[0].pathType, 'ImplementationSpecific');
+    assert.equal(regexIng.result.spec.rules[0].http.paths[1].pathType, 'Prefix');
+
+    const brokenBackend = migrate({
+      apiVersion: 'extensions/v1beta1',
+      kind: 'Ingress',
+      metadata: { name: 'broken-ing' },
+      spec: { backend: { serviceName: 'missing-port' } },
+    });
+    assert.equal(brokenBackend.result.apiVersion, 'extensions/v1beta1');
+    assert.equal(brokenBackend.events[0].type, 'manual');
+  });
+
+  it('renames PriorityLevelConfiguration assuredConcurrencyShares to nominalConcurrencyShares', () => {
+    const { result, events } = migrate({
+      apiVersion: 'flowcontrol.apiserver.k8s.io/v1beta2',
+      kind: 'PriorityLevelConfiguration',
+      metadata: { name: 'custom-pl' },
+      spec: {
+        type: 'Limited',
+        limited: { assuredConcurrencyShares: 40 },
+      },
+    });
+    assert.equal(result.apiVersion, 'flowcontrol.apiserver.k8s.io/v1');
+    assert.equal(events[0].type, 'migrated');
+    assert.equal(result.spec.limited.nominalConcurrencyShares, 40);
+    assert.equal(result.spec.limited.assuredConcurrencyShares, undefined);
+  });
+
+  it('converts v2beta1 HPA Object metric with averageValue', () => {
+    const { result, events } = migrate({
+      apiVersion: 'autoscaling/v2beta1',
+      kind: 'HorizontalPodAutoscaler',
+      metadata: { name: 'obj-avg-hpa' },
+      spec: {
+        metrics: [
+          {
+            type: 'Object',
+            object: {
+              target: { apiVersion: 'v1', kind: 'Service', name: 'web' },
+              metricName: 'http_requests',
+              averageValue: '100m',
+            },
+          },
+        ],
+      },
+    });
+    assert.equal(result.apiVersion, 'autoscaling/v2');
+    assert.equal(events[0].type, 'migrated');
+    assert.deepEqual(result.spec.metrics[0].object.target, {
+      type: 'AverageValue',
+      averageValue: '100m',
+    });
+    assert.equal(result.spec.metrics[0].object.averageValue, undefined);
+  });
+
+  it('does not add spec.selector when a legacy workload is skipped by targetVersion', () => {
+    const dep = {
+      apiVersion: 'extensions/v1beta1',
+      kind: 'Deployment',
+      metadata: { name: 'gated-dep' },
+      spec: { template: { metadata: { labels: { app: 'gated' } } } },
+    };
+    const [out] = migration.parseDocs([dep], { targetVersion: '1.15', reporter: () => {} });
+    assert.equal(out.apiVersion, 'extensions/v1beta1');
+    assert.equal(out.spec.selector, undefined);
+  });
+
+  it('migrates newer Kubernetes 1.30-1.35 deprecated APIs with accurate string removal versions', () => {
+    assert.equal(
+      migration.getRemovalVersion('ValidatingAdmissionPolicy', 'admissionregistration.k8s.io/v1alpha1'),
+      '1.30',
+    );
+    const input = [
+      { apiVersion: 'admissionregistration.k8s.io/v1beta1', kind: 'ValidatingAdmissionPolicy', metadata: { name: 'vap' } },
+      { apiVersion: 'admissionregistration.k8s.io/v1beta1', kind: 'ValidatingAdmissionPolicyBinding', metadata: { name: 'vapb' } },
+      { apiVersion: 'authentication.k8s.io/v1beta1', kind: 'SelfSubjectReview', metadata: { name: 'ssr' } },
+      { apiVersion: 'storage.k8s.io/v1alpha1', kind: 'VolumeAttributesClass', metadata: { name: 'vac' } },
+      { apiVersion: 'resource.k8s.io/v1beta1', kind: 'ResourceClaim', metadata: { name: 'rc' } },
+      { apiVersion: 'resource.k8s.io/v1beta1', kind: 'DeviceClass', metadata: { name: 'dc' } },
+    ];
+    const output = migration.parseDocs(input, { reporter: () => {} });
+    assert.equal(output[0].apiVersion, 'admissionregistration.k8s.io/v1');
+    assert.equal(output[1].apiVersion, 'admissionregistration.k8s.io/v1');
+    assert.equal(output[2].apiVersion, 'authentication.k8s.io/v1');
+    assert.equal(output[3].apiVersion, 'storage.k8s.io/v1');
+    assert.equal(output[4].apiVersion, 'resource.k8s.io/v1');
+    assert.equal(output[5].apiVersion, 'resource.k8s.io/v1');
+  });
 });

@@ -14,9 +14,123 @@
  */
 
 const { execFileSync } = require('child_process');
+const zlib = require('zlib');
 const yaml = require('./yaml');
 
 const LAST_APPLIED = 'kubectl.kubernetes.io/last-applied-configuration';
+
+/**
+ * Decodes a Helm v3 release Secret (type: helm.sh/release.v1) into its parsed release object.
+ * Helm v3 encodes secret.data.release as base64(base64(gzip(json))) in Kubernetes API output.
+ *
+ * @param {Object} secret Kubernetes Secret object
+ * @returns {Object|null} Parsed Helm release object or null if invalid/non-Helm
+ */
+function decodeHelmReleaseSecret(secret) {
+  if (!secret || secret.kind !== 'Secret') return null;
+  if (secret.type !== 'helm.sh/release.v1') return null;
+  const encoded = secret.data && secret.data.release;
+  if (typeof encoded !== 'string' || !encoded.trim()) return null;
+
+  try {
+    // Kubernetes Secret data is base64-encoded; Helm's storage driver also base64-encodes the gzip payload.
+    const firstPass = Buffer.from(encoded, 'base64');
+    let gzipped = firstPass;
+    // Check gzip magic bytes (0x1f 0x8b); if not gzip yet, decode the second base64 layer.
+    if (firstPass.length < 2 || firstPass[0] !== 0x1f || firstPass[1] !== 0x8b) {
+      gzipped = Buffer.from(firstPass.toString('utf8'), 'base64');
+    }
+    const jsonBytes =
+      gzipped.length >= 2 && gzipped[0] === 0x1f && gzipped[1] === 0x8b
+        ? zlib.gunzipSync(gzipped)
+        : gzipped;
+    const release = JSON.parse(jsonBytes.toString('utf8'));
+    if (!release || typeof release !== 'object') return null;
+    return release;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Extracts original manifests from Helm v3 release Secrets (YAML or JSON List).
+ * Only includes deployed releases by default (or all releases if options.allReleases is true).
+ *
+ * @param {string} secretsYaml Multi-doc YAML/JSON output from `kubectl get secrets -l owner=helm`
+ * @param {Object} [options]
+ * @returns {{ records: Array<{ resource: Object, source: string }>, releasesScanned: number, invalidReleases: number }}
+ */
+function collectHelmReleaseSources(secretsYaml, options = {}) {
+  const records = [];
+  let releasesScanned = 0;
+  let invalidReleases = 0;
+
+  for (const document of yaml.parseDocuments(secretsYaml)) {
+    const root = yaml.toPlainObject(document);
+    const items = root && root.kind === 'List' && Array.isArray(root.items)
+      ? root.items
+      : [root];
+
+    for (const secret of items) {
+      if (!secret || secret.kind !== 'Secret' || secret.type !== 'helm.sh/release.v1') continue;
+      const release = decodeHelmReleaseSecret(secret);
+      if (!release) {
+        invalidReleases++;
+        continue;
+      }
+      const status = release.info && release.info.status;
+      if (!options.allReleases && status && status !== 'deployed') {
+        continue;
+      }
+      releasesScanned++;
+      if (typeof release.manifest !== 'string' || !release.manifest.trim()) continue;
+
+      const relLabel = `helm:${release.namespace || 'default'}/${release.name || 'release'}@v${release.version || '?'}`;
+      try {
+        for (const doc of yaml.parseDocuments(release.manifest)) {
+          const obj = yaml.toPlainObject(doc);
+          if (obj && typeof obj === 'object' && obj.kind) {
+            records.push({ resource: obj, source: relLabel });
+          }
+        }
+      } catch {
+        invalidReleases++;
+      }
+    }
+  }
+
+  return { records, releasesScanned, invalidReleases };
+}
+
+/**
+ * Fetches Helm v3 release Secrets from an active Kubernetes cluster via kubectl.
+ */
+function fetchHelmReleaseSecrets(options = {}) {
+  if (!isKubectlInstalled()) {
+    throw new Error('"kubectl" CLI not found in PATH. Install kubectl to audit running clusters.');
+  }
+
+  const args = ['get', 'secrets', '-l', 'owner=helm', '-o', 'yaml'];
+  if (options.namespace) {
+    args.push('-n', options.namespace);
+  } else {
+    args.push('-A');
+  }
+  if (options.kubeconfig) {
+    args.push('--kubeconfig', options.kubeconfig);
+  }
+
+  try {
+    return execFileSync('kubectl', args, {
+      encoding: 'utf8',
+      maxBuffer: 50 * 1024 * 1024,
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+  } catch (err) {
+    const errorMsg = err.stderr ? err.stderr.toString() : err.message;
+    throw new Error(`Failed to query Helm release secrets via kubectl: ${errorMsg}`);
+  }
+}
 
 /** Select the original applied manifest where kubectl stored one. */
 function collectAuditSources(liveYaml) {
@@ -96,6 +210,10 @@ function fetchClusterManifests(options = {}) {
     'horizontalpodautoscalers',
     'poddisruptionbudgets',
     'networkpolicies',
+    'endpointslices',
+    'roles',
+    'rolebindings',
+    'leases',
   ].join(',');
 
   const args = ['get', resources, '-o', 'yaml'];
@@ -125,4 +243,7 @@ module.exports = {
   isKubectlInstalled,
   fetchClusterManifests,
   collectAuditSources,
+  decodeHelmReleaseSecret,
+  collectHelmReleaseSources,
+  fetchHelmReleaseSecrets,
 };

@@ -202,4 +202,62 @@ metadata:
     assert.equal(res.items[1].kind, 'CronJob');
     assert.equal(res.items[1].status, 'DEPRECATED');
   });
+
+  it('captures accurate 1-based line numbers and formats SARIF 2.1.0 reports', () => {
+    const raw = `apiVersion: v1
+kind: Service
+metadata:
+  name: ok
+---
+apiVersion: batch/v1beta1
+kind: CronJob
+metadata:
+  name: nightly
+`;
+    const res = auditContent(raw, 'k8s/cron.yaml', { targetVersion: '1.25' });
+    assert.equal(res.items.length, 1);
+    assert.equal(res.items[0].line, 6);
+
+    const report = {
+      filesScanned: 1,
+      documentsScanned: res.documentsScanned,
+      deprecatedCount: res.items.length,
+      items: res.items,
+    };
+
+    const sarif = JSON.parse(formatReport(report, 'sarif'));
+    assert.equal(sarif.version, '2.1.0');
+    assert.equal(sarif.runs[0].tool.driver.name, 'Janos');
+    assert.equal(sarif.runs[0].results.length, 1);
+    assert.equal(sarif.runs[0].results[0].ruleId, 'janos/deprecated-api/CronJob');
+    assert.equal(sarif.runs[0].results[0].level, 'error');
+    assert.equal(sarif.runs[0].results[0].locations[0].physicalLocation.region.startLine, 6);
+
+    const annotations = formatGitHubAnnotations(report);
+    assert.match(annotations, /^::warning file=k8s\/cron\.yaml,line=6,title=/);
+  });
+
+  it('escapes special characters in GitHub Actions annotations', () => {
+    const fakeReport = {
+      filesScanned: 1,
+      deprecatedCount: 1,
+      items: [
+        {
+          kind: 'CronJob',
+          name: 'bad:name,100%\nline2',
+          namespace: 'default',
+          currentApi: 'batch/v1beta1',
+          targetApi: 'batch/v1',
+          removedIn: 'v1.25',
+          file: 'dir,with:chars/job.yaml',
+          line: 3,
+        },
+      ],
+    };
+    const out = formatGitHubAnnotations(fakeReport);
+    assert.match(out, /file=dir%2Cwith%3Achars\/job\.yaml,line=3/);
+    assert.ok(!out.includes('\n'));
+    assert.ok(out.includes('%25'));
+    assert.ok(out.includes('%0A'));
+  });
 });

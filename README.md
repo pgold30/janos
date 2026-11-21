@@ -65,11 +65,17 @@ janos --audit -d ./k8s
 # Audit an active Kubernetes cluster directly via kubectl:
 janos --cluster --audit
 
+# Also decode Helm v3 release Secrets for original deployed manifests:
+janos --cluster --helm-releases --audit
+
 # Focus only on APIs completely removed in your target version:
 janos --audit -d ./k8s --target-version 1.25 --only-removed
+
+# Export SARIF 2.1.0 for GitHub Code Scanning:
+janos --audit -d ./k8s --format sarif --output-file janos.sarif
 ```
 
-Cluster mode queries a fixed set of workload and networking kinds through `kubectl`. For each returned resource it prefers a matching `kubectl.kubernetes.io/last-applied-configuration` manifest, then falls back to the served API if that annotation is missing or invalid. Reports show the coverage counts; a served API cannot establish which version was originally applied. Use `--cluster --audit --check --require-original` to fail when any original manifest is unavailable. The collector does not inspect every Kubernetes resource kind or Helm release history, so scanning source manifests remains important.
+Cluster mode queries workload, networking, RBAC, and coordination kinds through `kubectl`. For each returned resource it prefers a matching `kubectl.kubernetes.io/last-applied-configuration` manifest, then falls back to the served API if that annotation is missing or invalid. Add `--helm-releases` to also decode deployed Helm v3 release Secrets (`sh.helm.release.v1.*`) for original rendered manifests. Reports show the coverage counts; a served API cannot establish which version was originally applied. Use `--cluster --audit --check --require-original` to fail when any original manifest is unavailable.
 
 Example audit report output with severity tags:
 
@@ -112,7 +118,7 @@ janos --ingress-to-gateway -f ingress.yaml
 janos --ingress-to-gateway --generate-gateway -f ingress.yaml --out gateway.yaml
 ```
 
-The generated file is separate from the source Ingress. The default name is `ingress.gateway.yaml`. Review `parentRefs`, Gateway class, TLS, backend ports, and annotation translations before applying it. Use `--dry-run` or `--check` to avoid writing output.
+The generated file is separate from the source Ingress. The default name is `ingress.gateway.yaml`. Multi-host Ingresses are split into isolated per-host `HTTPRoute` resources, multi-host `spec.tls` entries generate per-host HTTPS listeners, and `permanent-redirect` URLs are parsed into `RequestRedirect` fields. Janos warns on named service ports, regex capture groups in `rewrite-target`, and unsupported provider annotations. Review `parentRefs`, Gateway class, TLS, backend ports, and annotation translations before applying it. Use `--dry-run` or `--check` to avoid writing output.
 
 For controller-specific annotations or CRDs, also run [ingress2gateway](https://github.com/kubernetes-sigs/ingress2gateway) with the provider that owns the Ingress. For example, with its `ingress-nginx` provider installed:
 
@@ -156,12 +162,18 @@ kind: CronJob
 
 *(For GitOps pipelines, Helm charts, Unix streams, and automated CI/CD pull request checks)*
 
-### 1. ⎈ Helm Chart & Template Support
-Janos provides native support for Helm without breaking Go template syntax:
-- **Render & Audit Charts**:
+### 1. ⎈ Helm Chart, Template & Kustomize Support
+Janos provides native support for Helm and Kustomize without breaking Go template syntax:
+- **Render & Audit Helm Charts**:
   ```sh
   janos --chart ./charts/my-app --audit
   janos --chart ./charts/my-app --values ./prod-values.yaml --audit --format markdown
+  ```
+- **Render & Audit Kustomize Overlays (`-k` / `--kustomize`)**:
+  Renders overlays via `kustomize build` or `kubectl kustomize` for audit, diff, check, or migration:
+  ```sh
+  janos --kustomize ./overlays/production --audit
+  janos -k ./overlays/production --diff --target-version 1.32
   ```
 - **Migrate Raw Helm Templates In-Place**:
   Updates literal `apiVersion` lines for simple rules inside `templates/*.yaml` while keeping `{{ ... }}` Go expressions untouched. Structural cases are reported for manual review. Render and validate the chart afterward:
@@ -203,7 +215,7 @@ jobs:
           check: 'true'
           target-version: '1.25'
 ```
-*Janos emits GitHub Actions warning annotations and writes markdown reports to the job summary. The action installs its Node dependency when it runs. `args` accepts whitespace-separated flags and values; paths with spaces belong in the dedicated `path`, `chart`, or `values` inputs.*
+*Janos emits GitHub Actions warning annotations with line numbers and writes markdown reports to the job summary. Pass `args: '--audit --format sarif --output-file janos.sarif'` to upload findings to GitHub Code Scanning. The action installs its Node dependency when it runs. `args` accepts whitespace-separated flags and values; paths with spaces belong in the dedicated `path`, `chart`, `kustomize`, or `values` inputs.*
 
 ### 4. 🪝 Pre-commit Hook Integration
 Block deprecated manifests from ever being committed to git. Add to `.pre-commit-config.yaml`:
@@ -240,7 +252,7 @@ For CI runners without Node.js:
 docker run --rm -v $(pwd)/k8s:/var/janos ghcr.io/pgold30/janos:2.4.0 --audit -d /var/janos
 
 # Audit running cluster from container (mount kubeconfig):
-docker run --rm -v ~/.kube:/root/.kube:ro ghcr.io/pgold30/janos:2.4.0 --cluster --audit
+docker run --rm -v ~/.kube:/home/node/.kube:ro ghcr.io/pgold30/janos:2.4.0 --cluster --audit
 ```
 
 ---
@@ -265,16 +277,18 @@ Audit & Filter Options:
       --audit, --scan           Pluto-style read-only audit: scan and print summary table
       --target-version <ver>    Gate migrations up to a specific Kubernetes version (e.g. 1.25)
       --only-removed            Audit: only list APIs that are completely removed in target version
-      --format <format>         Output format: table (default), markdown, json, or annotations
+      --format <format>         Output format: table (default), markdown, json, sarif, or annotations
       --output-file <file>      Write audit report directly to a file
 
-Cluster & Helm Options:
+Cluster, Helm & Kustomize Options:
       --cluster, --live         Audit running Kubernetes cluster directly via kubectl
+      --helm-releases           With --cluster, also decode Helm v3 release Secrets for original manifests
       --require-original        With --cluster --check, fail if any original manifest is unavailable
       --namespace <ns>          Namespace filter for live cluster audit (default: all namespaces)
       --kubeconfig <file>       Custom kubeconfig file path
       --chart, --helm <dir>     Scan or render Helm chart directory via 'helm template'
       --values <file>           Specify values YAML file for Helm chart rendering
+  -k, --kustomize <dir>         Render and audit/migrate a Kustomize directory via kustomize/kubectl
 
 Gateway API Options:
       --ingress-to-gateway      Translate Ingress manifests to Gateway API (HTTPRoute)
@@ -296,7 +310,7 @@ General & CI:
 
 ---
 
-## 📋 Supported API Migrations (v1.16 – v1.32+)
+## 📋 Supported API Migrations (v1.16 – v1.35+)
 
 | Resource Kind | Deprecated / Removed Versions | Target Version | Removed In | Transformation Details |
 | :--- | :--- | :--- | :---: | :--- |
@@ -307,7 +321,7 @@ General & CI:
 | **NetworkPolicy** | `extensions/v1beta1` | `networking.k8s.io/v1` | 1.16 | API version update |
 | **Role / ClusterRole** | `rbac.authorization.k8s.io/v1alpha1`, `v1beta1` | `rbac.authorization.k8s.io/v1` | 1.17 / 1.22 | Full RBAC v1 migration |
 | **RoleBinding / ClusterRoleBinding** | `rbac.authorization.k8s.io/v1alpha1`, `v1beta1` | `rbac.authorization.k8s.io/v1` | 1.17 / 1.22 | Full RBAC v1 migration |
-| **Ingress** | `extensions/v1beta1`, `networking.k8s.io/v1beta1` | `networking.k8s.io/v1` | 1.22 | Migrates `spec.backend` to `defaultBackend`, converts `serviceName`/`servicePort` to `service.name`/`port`, adds `pathType: Prefix` (or convert to Gateway API with `--ingress-to-gateway`) |
+| **Ingress** | `extensions/v1beta1`, `networking.k8s.io/v1beta1` | `networking.k8s.io/v1` | 1.22 | Atomic backend validation (`serviceName`/`servicePort` → `service.name`/`port`), `spec.backend` → `defaultBackend`, smart `pathType` (`ImplementationSpecific` for regex/`use-regex`, else `Prefix`) |
 | **IngressClass** | `networking.k8s.io/v1beta1` | `networking.k8s.io/v1` | 1.22 | API version update |
 | **CustomResourceDefinition** | `apiextensions.k8s.io/v1beta1` | `apiextensions.k8s.io/v1` | 1.22 | Moves legacy fields into `spec.versions`; requires an existing structural schema |
 | **ValidatingWebhookConfiguration** | `admissionregistration.k8s.io/v1beta1` | `admissionregistration.k8s.io/v1` | 1.22 | Preserves old defaults; requires explicit `sideEffects` and `admissionReviewVersions` |
@@ -320,16 +334,20 @@ General & CI:
 | **CertificateSigningRequest** | `certificates.k8s.io/v1beta1` | `certificates.k8s.io/v1` | 1.22 | Requires an explicit signer, request, and valid usages |
 | **TokenReview / SubjectAccessReview** | `authentication/authorization.k8s.io/v1beta1` | `authentication/authorization.k8s.io/v1` | 1.22 | Full v1 authorization review migration |
 | **CronJob** | `batch/v1beta1` | `batch/v1` | 1.25 | Batch v1 migration |
-| **PodDisruptionBudget** | `policy/v1beta1` | `policy/v1` | 1.25 | Policy v1 migration |
-| **EndpointSlice** | `discovery.k8s.io/v1beta1` | `discovery.k8s.io/v1` | 1.25 | Discovery v1 migration |
-| **Event** | `events.k8s.io/v1beta1` | `events.k8s.io/v1` | 1.25 | Events v1 migration |
+| **PodDisruptionBudget** | `policy/v1beta1` | `policy/v1` | 1.25 | Blocks empty `spec.selector: {}` (semantic change from 0 pods to all pods) for manual review |
+| **EndpointSlice** | `discovery.k8s.io/v1beta1` | `discovery.k8s.io/v1` | 1.25 | Migrates `endpoints[].topology` hostname/zone to `nodeName`/`zone`; flags unknown topology keys |
+| **Event** | `events.k8s.io/v1beta1` | `events.k8s.io/v1` | 1.25 | Validates `type` (`Normal`/`Warning`) and required `v1` fields when legacy `deprecated*` fields exist |
 | **RuntimeClass** | `node.k8s.io/v1beta1` | `node.k8s.io/v1` | 1.25 | Node v1 migration |
-| **HorizontalPodAutoscaler** | `autoscaling/v2beta1`, `v2beta2` | `autoscaling/v2` | 1.25 / 1.26 | Converts supported metric sources and checks target values |
+| **HorizontalPodAutoscaler** | `autoscaling/v2beta1`, `v2beta2` | `autoscaling/v2` | 1.25 / 1.26 | Converts supported metric sources (including `v2beta1` `Object` `averageValue`) and checks target values |
 | **CSIStorageCapacity** | `storage.k8s.io/v1beta1` | `storage.k8s.io/v1` | 1.27 | Storage v1 migration |
-| **FlowSchema / PriorityLevelConfig** | `flowcontrol.apiserver.k8s.io/v1beta1..3` | `flowcontrol.apiserver.k8s.io/v1` | 1.26–1.32 | Flow control v1 migration |
+| **FlowSchema / PriorityLevelConfig** | `flowcontrol.apiserver.k8s.io/v1beta1..3` | `flowcontrol.apiserver.k8s.io/v1` | 1.26–1.32 | Renames `spec.limited.assuredConcurrencyShares` → `nominalConcurrencyShares` |
+| **SelfSubjectReview** | `authentication.k8s.io/v1alpha1`, `v1beta1` | `authentication.k8s.io/v1` | 1.28 / 1.32 | Authentication v1 migration |
+| **ValidatingAdmissionPolicy / Binding** | `admissionregistration.k8s.io/v1alpha1`, `v1beta1` | `admissionregistration.k8s.io/v1` | 1.30 / 1.34 | Admission policy v1 migration |
+| **VolumeAttributesClass** | `storage.k8s.io/v1alpha1`, `v1beta1` | `storage.k8s.io/v1` | 1.34 / 1.36 | Storage v1 migration |
+| **ResourceClaim / DeviceClass / ResourceSlice** | `resource.k8s.io/v1alpha3`, `v1beta1` | `resource.k8s.io/v1` | 1.34 / 1.36 | Dynamic Resource Allocation (DRA) v1 migration |
 | **PodSecurityPolicy** | `extensions/v1beta1`, `policy/v1beta1` | Manual migration | 1.25 | Left unchanged; `--check` fails and points to Pod Security Admission |
 
-The schema checks above cover known migration requirements; they do not replace validation against the target Kubernetes API server. Other rules in this table still only change `apiVersion` and may need structural work. In particular, review Event and EndpointSlice fields and empty PodDisruptionBudget selectors before applying. See [ROADMAP.md](ROADMAP.md) for the next validation work.
+The schema checks above cover known breaking migration requirements; they do not replace validation against the target Kubernetes API server (for example, `kubectl apply --dry-run=server`). See [ROADMAP.md](ROADMAP.md) for upcoming validation work.
 
 ---
 

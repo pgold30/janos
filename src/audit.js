@@ -16,7 +16,8 @@
 const fs = require('fs');
 const path = require('path');
 const yaml = require('./yaml');
-const { normalizeKind, getRemovalVersion, parseVersionNum, MIGRATION_RULES } = require('./migration');
+const { normalizeKind, getRemovalVersion, parseVersionNum, MIGRATION_RULES, LATEST_K8S_VERSION } = require('./migration');
+const { getVersion } = require('./cli');
 
 const helm = require('./helm');
 
@@ -26,11 +27,30 @@ function toJS(doc) {
   return doc;
 }
 
+function lineFromOffset(content, offset) {
+  if (typeof content !== 'string' || typeof offset !== 'number' || offset < 0) return null;
+  let line = 1;
+  const end = Math.min(offset, content.length);
+  for (let i = 0; i < end; i++) {
+    if (content.charCodeAt(i) === 10) line++;
+  }
+  return line;
+}
+
+function getApiVersionLine(docNode, content) {
+  if (!docNode || typeof docNode.get !== 'function') return null;
+  const apiNode = docNode.get('apiVersion', true);
+  if (apiNode && Array.isArray(apiNode.range) && typeof apiNode.range[0] === 'number') {
+    return lineFromOffset(content, apiNode.range[0]);
+  }
+  return null;
+}
+
 function filterRemovedItems(items, options = {}) {
   if (!options.onlyRemoved) return items;
   const targetVer = options.targetVersion
     ? parseVersionNum(options.targetVersion)
-    : parseVersionNum('1.32');
+    : parseVersionNum(LATEST_K8S_VERSION);
   return items.filter((item) => {
     const remVer = parseVersionNum(item.removedIn);
     return remVer <= targetVer;
@@ -65,9 +85,9 @@ function auditContent(content, sourceName = 'STDIN', options = {}) {
 
   for (const docNode of docs) {
     const root = toJS(docNode);
-    const resources = root && root.kind === 'List' && Array.isArray(root.items)
-      ? root.items
-      : [root];
+    const isList = Boolean(root && root.kind === 'List' && Array.isArray(root.items));
+    const docLine = isList ? null : getApiVersionLine(docNode, content);
+    const resources = isList ? root.items : [root];
     for (const doc of resources) {
       if (!doc || typeof doc !== 'object') continue;
       documentsScanned++;
@@ -87,10 +107,10 @@ function auditContent(content, sourceName = 'STDIN', options = {}) {
         const remVer = parseVersionNum(removedIn);
         const targetVer = options.targetVersion
           ? parseVersionNum(options.targetVersion)
-          : parseVersionNum('1.32');
+          : parseVersionNum(LATEST_K8S_VERSION);
         const status = remVer <= targetVer ? 'REMOVED' : 'DEPRECATED';
 
-        items.push({
+        const item = {
           kind,
           name,
           namespace,
@@ -100,7 +120,11 @@ function auditContent(content, sourceName = 'STDIN', options = {}) {
           status,
           file: sourceName,
           warning: rule.warning || null,
-        });
+        };
+        if (docLine !== null) {
+          item.line = docLine;
+        }
+        items.push(item);
       }
     }
   }
@@ -230,6 +254,22 @@ function formatMarkdownTable(report) {
   return lines.join('\n') + coverage;
 }
 
+function escapeGitHubProperty(value) {
+  return String(value)
+    .replace(/%/g, '%25')
+    .replace(/\r/g, '%0D')
+    .replace(/\n/g, '%0A')
+    .replace(/:/g, '%3A')
+    .replace(/,/g, '%2C');
+}
+
+function escapeGitHubMessage(value) {
+  return String(value)
+    .replace(/%/g, '%25')
+    .replace(/\r/g, '%0D')
+    .replace(/\n/g, '%0A');
+}
+
 function formatGitHubAnnotations(report) {
   if (!report || !report.items || report.items.length === 0) {
     return '';
@@ -237,11 +277,83 @@ function formatGitHubAnnotations(report) {
 
   return report.items
     .map((item) => {
-      const title = encodeURIComponent ? `Deprecated Kubernetes API: ${item.kind}` : 'Deprecated Kubernetes API';
-      const msg = `${item.kind} "${item.name}" uses deprecated ${item.currentApi} (removed in ${item.removedIn}). Replace with ${item.targetApi}.`;
-      return `::warning file=${item.file},title=${title}::${msg}`;
+      const props = [`file=${escapeGitHubProperty(item.file)}`];
+      if (item.line) {
+        props.push(`line=${item.line}`);
+      }
+      props.push(`title=${escapeGitHubProperty(`Deprecated Kubernetes API (${item.kind})`)}`);
+      const msg = escapeGitHubMessage(
+        `${item.kind} "${item.name}" uses deprecated ${item.currentApi} (removed in ${item.removedIn}). Replace with ${item.targetApi}.`,
+      );
+      return `::warning ${props.join(',')}::${msg}`;
     })
     .join('\n');
+}
+
+function formatSarif(report) {
+  const items = (report && Array.isArray(report.items)) ? report.items : [];
+  const rulesMap = new Map();
+
+  for (const item of items) {
+    const ruleId = `janos/deprecated-api/${item.kind}`;
+    if (!rulesMap.has(ruleId)) {
+      rulesMap.set(ruleId, {
+        id: ruleId,
+        name: `Deprecated${item.kind}API`,
+        shortDescription: {
+          text: `Deprecated Kubernetes ${item.kind} API version`,
+        },
+        fullDescription: {
+          text: `Kubernetes ${item.kind} manifests should migrate from deprecated API versions to ${item.targetApi}.`,
+        },
+        helpUri: 'https://kubernetes.io/docs/reference/using-api/deprecation-guide/',
+        properties: {
+          tags: ['kubernetes', 'deprecation', 'upgrade'],
+        },
+      });
+    }
+  }
+
+  const results = items.map((item) => {
+    const ruleId = `janos/deprecated-api/${item.kind}`;
+    const level = item.status === 'REMOVED' ? 'error' : 'warning';
+    const location = {
+      physicalLocation: {
+        artifactLocation: {
+          uri: String(item.file || 'STDIN').replace(/\\/g, '/'),
+        },
+        ...(item.line ? { region: { startLine: item.line } } : {}),
+      },
+    };
+    return {
+      ruleId,
+      level,
+      message: {
+        text: `${item.kind} "${item.name}" in namespace "${item.namespace || 'default'}" uses ${item.currentApi} (removed in ${item.removedIn}). Replace with ${item.targetApi}.`,
+      },
+      locations: [location],
+    };
+  });
+
+  const sarif = {
+    $schema: 'https://json.schemastore.org/sarif-2.1.0.json',
+    version: '2.1.0',
+    runs: [
+      {
+        tool: {
+          driver: {
+            name: 'Janos',
+            version: getVersion(),
+            informationUri: 'https://github.com/pgold30/janos',
+            rules: Array.from(rulesMap.values()),
+          },
+        },
+        results,
+      },
+    ],
+  };
+
+  return JSON.stringify(sarif, null, 2);
 }
 
 function formatReport(report, format = 'table') {
@@ -251,6 +363,8 @@ function formatReport(report, format = 'table') {
       return formatMarkdownTable(report);
     case 'json':
       return JSON.stringify(report, null, 2);
+    case 'sarif':
+      return formatSarif(report);
     case 'annotations':
       return formatGitHubAnnotations(report);
     case 'table':
@@ -266,4 +380,5 @@ module.exports = {
   formatAsciiTable,
   formatMarkdownTable,
   formatGitHubAnnotations,
+  formatSarif,
 };

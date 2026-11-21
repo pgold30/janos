@@ -82,6 +82,8 @@ function parseVersionNum(vStr) {
   return parseInt(match[1], 10) * 1000 + parseInt(match[2], 10);
 }
 
+const LATEST_K8S_VERSION = '1.35';
+
 function normalizeKind(kind) {
   if (!kind || typeof kind !== 'string') return kind;
   const lower = kind.toLowerCase();
@@ -106,13 +108,17 @@ function normalizeKind(kind) {
     customresourcedefinition: 'CustomResourceDefinition',
     validatingwebhookconfiguration: 'ValidatingWebhookConfiguration',
     mutatingwebhookconfiguration: 'MutatingWebhookConfiguration',
+    validatingadmissionpolicy: 'ValidatingAdmissionPolicy',
+    validatingadmissionpolicybinding: 'ValidatingAdmissionPolicyBinding',
     csidriver: 'CSIDriver',
     csinode: 'CSINode',
     storageclass: 'StorageClass',
     volumeattachment: 'VolumeAttachment',
     csistoragecapacity: 'CSIStorageCapacity',
+    volumeattributesclass: 'VolumeAttributesClass',
     apiservice: 'APIService',
     tokenreview: 'TokenReview',
+    selfsubjectreview: 'SelfSubjectReview',
     subjectaccessreview: 'SubjectAccessReview',
     localsubjectaccessreview: 'LocalSubjectAccessReview',
     selfsubjectaccessreview: 'SelfSubjectAccessReview',
@@ -124,6 +130,10 @@ function normalizeKind(kind) {
     runtimeclass: 'RuntimeClass',
     flowschema: 'FlowSchema',
     prioritylevelconfiguration: 'PriorityLevelConfiguration',
+    resourceclaim: 'ResourceClaim',
+    resourceclaimtemplate: 'ResourceClaimTemplate',
+    deviceclass: 'DeviceClass',
+    resourceslice: 'ResourceSlice',
   };
   return map[lower] || kind;
 }
@@ -133,38 +143,62 @@ function getRemovalVersion(kind, apiVersion) {
   const v = typeof apiVersion === 'string' ? apiVersion.trim() : apiVersion;
 
   if (norm === 'HorizontalPodAutoscaler') {
-    if (v === 'autoscaling/v2beta1') return 1.25;
-    if (v === 'autoscaling/v2beta2') return 1.26;
+    if (v === 'autoscaling/v2beta1') return '1.25';
+    if (v === 'autoscaling/v2beta2') return '1.26';
   }
   if (norm === 'FlowSchema' || norm === 'PriorityLevelConfiguration') {
-    if (v === 'flowcontrol.apiserver.k8s.io/v1beta1') return 1.26;
-    if (v === 'flowcontrol.apiserver.k8s.io/v1beta2') return 1.29;
-    if (v === 'flowcontrol.apiserver.k8s.io/v1beta3') return 1.32;
+    if (v === 'flowcontrol.apiserver.k8s.io/v1beta1') return '1.26';
+    if (v === 'flowcontrol.apiserver.k8s.io/v1beta2') return '1.29';
+    if (v === 'flowcontrol.apiserver.k8s.io/v1beta3') return '1.32';
+  }
+  if (norm === 'ValidatingAdmissionPolicy' || norm === 'ValidatingAdmissionPolicyBinding') {
+    if (v === 'admissionregistration.k8s.io/v1alpha1') return '1.30';
+    if (v === 'admissionregistration.k8s.io/v1beta1') return '1.34';
+  }
+  if (norm === 'SelfSubjectReview') {
+    if (v === 'authentication.k8s.io/v1alpha1') return '1.28';
+    if (v === 'authentication.k8s.io/v1beta1') return '1.32';
+  }
+  if (norm === 'VolumeAttributesClass') {
+    if (v === 'storage.k8s.io/v1alpha1') return '1.34';
+    if (v === 'storage.k8s.io/v1beta1') return '1.36';
+  }
+  if (['ResourceClaim', 'ResourceClaimTemplate', 'DeviceClass', 'ResourceSlice'].includes(norm)) {
+    if (v === 'resource.k8s.io/v1alpha3') return '1.34';
+    if (v === 'resource.k8s.io/v1beta1') return '1.36';
   }
   if (norm === 'Role' || norm === 'RoleBinding' || norm === 'ClusterRole' || norm === 'ClusterRoleBinding') {
-    if (v === 'rbac.authorization.k8s.io/v1alpha1') return 1.17;
-    return 1.22;
+    if (v === 'rbac.authorization.k8s.io/v1alpha1') return '1.17';
+    return '1.22';
   }
   if (['Deployment', 'DaemonSet', 'StatefulSet', 'ReplicaSet', 'NetworkPolicy'].includes(norm)) {
-    return 1.16;
+    return '1.16';
   }
   if (norm === 'PodSecurityPolicy') {
-    return 1.25;
+    return '1.25';
   }
   if (['CronJob', 'PodDisruptionBudget', 'EndpointSlice', 'Event', 'RuntimeClass'].includes(norm)) {
-    return 1.25;
+    return '1.25';
   }
   if (norm === 'CSIStorageCapacity') {
-    return 1.27;
+    return '1.27';
   }
-  return 1.22;
+  return '1.22';
+}
+
+function isRegexPath(pathStr) {
+  if (typeof pathStr !== 'string') return false;
+  return /[()[\]|^$?*+\\]|\.\*/.test(pathStr);
 }
 
 function migrateIngressBackend(backend) {
-  if (!backend || typeof backend !== 'object') return backend;
-  if (backend.service) return backend;
+  if (!backend || typeof backend !== 'object') return { backend };
+  if (backend.service || backend.resource) return { backend };
   const { serviceName, servicePort, ...rest } = backend;
   if (serviceName !== undefined || servicePort !== undefined) {
+    if (!serviceName || servicePort === undefined || servicePort === null || servicePort === '') {
+      return { error: 'Ingress backend with serviceName requires an explicit servicePort.' };
+    }
     const port =
       typeof servicePort === 'number'
         ? { number: servicePort }
@@ -172,56 +206,170 @@ function migrateIngressBackend(backend) {
           ? { number: parseInt(servicePort, 10) }
           : { name: servicePort };
     return {
-      service: {
-        name: serviceName,
-        port,
+      backend: {
+        service: {
+          name: serviceName,
+          port,
+        },
+        ...rest,
       },
-      ...rest,
     };
   }
-  return backend;
+  return { backend };
 }
 
-function migrateIngress(doc) {
+function planIngress(doc) {
+  const updates = [];
+  const deletes = [];
+  const annotations = getVal(doc, ['metadata', 'annotations']) || {};
+  const useRegexAnnotation =
+    annotations['nginx.ingress.kubernetes.io/use-regex'] === 'true' ||
+    annotations['nginx.ingress.kubernetes.io/use-regex'] === true;
+
   const defaultBackend = getVal(doc, ['spec', 'backend']);
   if (defaultBackend) {
-    const migrated = migrateIngressBackend(defaultBackend);
-    deleteVal(doc, ['spec', 'backend']);
-    setVal(doc, ['spec', 'defaultBackend'], migrated);
+    const res = migrateIngressBackend(defaultBackend);
+    if (res.error) return manual(res.error);
+    deletes.push(['spec', 'backend']);
+    updates.push([['spec', 'defaultBackend'], res.backend]);
   }
 
   const rules = getVal(doc, ['spec', 'rules']);
   if (Array.isArray(rules)) {
-    rules.forEach((rule, rIdx) => {
+    for (let rIdx = 0; rIdx < rules.length; rIdx++) {
+      const rule = rules[rIdx];
       if (rule && rule.http && Array.isArray(rule.http.paths)) {
-        rule.http.paths.forEach((p, pIdx) => {
+        for (let pIdx = 0; pIdx < rule.http.paths.length; pIdx++) {
+          const p = rule.http.paths[pIdx];
+          if (!p || typeof p !== 'object') continue;
           if (!p.pathType) {
-            setVal(doc, ['spec', 'rules', rIdx, 'http', 'paths', pIdx, 'pathType'], 'Prefix');
+            const inferredType =
+              useRegexAnnotation || isRegexPath(p.path) ? 'ImplementationSpecific' : 'Prefix';
+            updates.push([['spec', 'rules', rIdx, 'http', 'paths', pIdx, 'pathType'], inferredType]);
           }
           if (p.backend) {
-            const migrated = migrateIngressBackend(p.backend);
-            setVal(doc, ['spec', 'rules', rIdx, 'http', 'paths', pIdx, 'backend'], migrated);
+            const res = migrateIngressBackend(p.backend);
+            if (res.error) return manual(res.error);
+            updates.push([['spec', 'rules', rIdx, 'http', 'paths', pIdx, 'backend'], res.backend]);
           }
-        });
+        }
       }
-    });
+    }
   }
+
+  return { updates, deletes };
+}
+
+function planPDB(resource) {
+  const selector = getVal(resource, ['spec', 'selector']);
+  if (selector && typeof selector === 'object' && !Array.isArray(selector)) {
+    const hasMatchLabels =
+      selector.matchLabels && typeof selector.matchLabels === 'object' && Object.keys(selector.matchLabels).length > 0;
+    const hasMatchExpressions =
+      Array.isArray(selector.matchExpressions) && selector.matchExpressions.length > 0;
+    if (!hasMatchLabels && !hasMatchExpressions) {
+      return manual(
+        'Empty spec.selector {} matched 0 pods in policy/v1beta1 but matches ALL pods in policy/v1; specify an explicit selector or remove the PDB.',
+      );
+    }
+  }
+  return { updates: [], deletes: [] };
+}
+
+function planEndpointSlice(resource) {
+  const endpoints = getVal(resource, 'endpoints');
+  if (!Array.isArray(endpoints)) return { updates: [], deletes: [] };
+
+  let modified = false;
+  const converted = [];
+  for (const ep of endpoints) {
+    if (!ep || typeof ep !== 'object') {
+      converted.push(ep);
+      continue;
+    }
+    if (!ep.topology || typeof ep.topology !== 'object') {
+      converted.push(ep);
+      continue;
+    }
+    const next = { ...ep };
+    const remaining = {};
+    for (const [k, v] of Object.entries(ep.topology)) {
+      if (k === 'kubernetes.io/hostname') {
+        if (next.nodeName === undefined) next.nodeName = v;
+        modified = true;
+      } else if (k === 'topology.kubernetes.io/zone') {
+        if (next.zone === undefined) next.zone = v;
+        modified = true;
+      } else {
+        remaining[k] = v;
+      }
+    }
+    const unknownKeys = Object.keys(remaining);
+    if (unknownKeys.length > 0) {
+      return manual(
+        `EndpointSlice endpoint has topology keys (${unknownKeys.join(', ')}) with no direct discovery.k8s.io/v1 equivalent; migrate manually.`,
+      );
+    }
+    delete next.topology;
+    modified = true;
+    converted.push(next);
+  }
+
+  return modified ? { updates: [[['endpoints'], converted]], deletes: [] } : { updates: [], deletes: [] };
+}
+
+function planEvent(resource) {
+  const eventType = getVal(resource, 'type');
+  if (eventType !== undefined && eventType !== null && !['Normal', 'Warning'].includes(eventType)) {
+    return manual(`Event type "${eventType}" is not valid in events.k8s.io/v1 (must be Normal or Warning).`);
+  }
+  const hasDeprecatedFields =
+    getVal(resource, 'deprecatedSource') !== undefined ||
+    getVal(resource, 'deprecatedFirstTimestamp') !== undefined ||
+    getVal(resource, 'deprecatedLastTimestamp') !== undefined ||
+    getVal(resource, 'deprecatedCount') !== undefined;
+  if (hasDeprecatedFields) {
+    const missing = ['eventTime', 'reportingController', 'reportingInstance', 'action', 'reason', 'regarding'].filter(
+      (f) => getVal(resource, f) === undefined,
+    );
+    if (missing.length > 0) {
+      return manual(`events.k8s.io/v1 requires ${missing.join(', ')} when migrating legacy Event fields.`);
+    }
+  }
+  return { updates: [], deletes: [] };
+}
+
+function planPriorityLevelConfiguration(resource) {
+  const assured = getVal(resource, ['spec', 'limited', 'assuredConcurrencyShares']);
+  if (assured !== undefined) {
+    const nominal = getVal(resource, ['spec', 'limited', 'nominalConcurrencyShares']);
+    const updates = nominal === undefined ? [[['spec', 'limited', 'nominalConcurrencyShares'], assured]] : [];
+    return {
+      updates,
+      deletes: [['spec', 'limited', 'assuredConcurrencyShares']],
+    };
+  }
+  return { updates: [], deletes: [] };
 }
 
 function manual(message) {
   return { error: message, updates: [], deletes: [] };
 }
 
-function metricTarget(source) {
+function metricTarget(source, metricType) {
   if (source.target && source.target.type) {
     const field = { Utilization: 'averageUtilization', AverageValue: 'averageValue', Value: 'value' }[source.target.type];
     return field && source.target[field] !== undefined ? source.target : null;
   }
-  const choices = [
+  const candidates = [
     ['targetAverageUtilization', 'Utilization', 'averageUtilization'],
     ['targetAverageValue', 'AverageValue', 'averageValue'],
     ['targetValue', 'Value', 'value'],
-  ].filter(([field]) => source[field] !== undefined);
+  ];
+  if (metricType === 'Object') {
+    candidates.push(['averageValue', 'AverageValue', 'averageValue']);
+  }
+  const choices = candidates.filter(([field]) => source[field] !== undefined);
   if (choices.length !== 1) return null;
   const [field, type, targetField] = choices[0];
   return { type, [targetField]: source[field] };
@@ -243,13 +391,16 @@ function planHPA(resource, apiVersion) {
     if (!source || typeof source !== 'object') {
       return manual(`spec.metrics contains an unsupported ${metric.type || 'unknown'} metric.`);
     }
-    const target = metricTarget(source);
+    const target = metricTarget(source, metric.type);
     if (!target) return manual(`${metric.type} metric needs one explicit target value.`);
 
     const nextSource = { ...source, target };
     delete nextSource.targetAverageUtilization;
     delete nextSource.targetAverageValue;
     delete nextSource.targetValue;
+    if (metric.type === 'Object') {
+      delete nextSource.averageValue;
+    }
 
     if (apiVersion === 'autoscaling/v2beta1' && ['Object', 'Pods', 'External'].includes(metric.type)) {
       if (!source.metricName) return manual(`${metric.type} metric needs metricName.`);
@@ -400,6 +551,11 @@ function planSchemaMigration(resource, kind, apiVersion) {
   if (kind === 'PodSecurityPolicy') {
     return manual('PodSecurityPolicy has no replacement API. Migrate its policy to Pod Security Admission or another admission controller.');
   }
+  if (kind === 'Ingress') return planIngress(resource);
+  if (kind === 'PodDisruptionBudget') return planPDB(resource);
+  if (kind === 'EndpointSlice') return planEndpointSlice(resource);
+  if (kind === 'Event') return planEvent(resource);
+  if (kind === 'PriorityLevelConfiguration') return planPriorityLevelConfiguration(resource);
   if (kind === 'CustomResourceDefinition') return planCRD(resource);
   if (kind === 'ValidatingWebhookConfiguration' || kind === 'MutatingWebhookConfiguration') {
     return planWebhook(resource);
@@ -441,7 +597,6 @@ const MIGRATION_RULES = {
   Ingress: {
     legacy: ['extensions/v1beta1', 'networking.k8s.io/v1beta1'],
     target: 'networking.k8s.io/v1',
-    transform: migrateIngress,
   },
   IngressClass: {
     legacy: ['networking.k8s.io/v1beta1'],
@@ -567,6 +722,50 @@ const MIGRATION_RULES = {
     ],
     target: 'flowcontrol.apiserver.k8s.io/v1',
   },
+  ValidatingAdmissionPolicy: {
+    legacy: [
+      'admissionregistration.k8s.io/v1alpha1',
+      'admissionregistration.k8s.io/v1beta1',
+    ],
+    target: 'admissionregistration.k8s.io/v1',
+  },
+  ValidatingAdmissionPolicyBinding: {
+    legacy: [
+      'admissionregistration.k8s.io/v1alpha1',
+      'admissionregistration.k8s.io/v1beta1',
+    ],
+    target: 'admissionregistration.k8s.io/v1',
+  },
+  SelfSubjectReview: {
+    legacy: [
+      'authentication.k8s.io/v1alpha1',
+      'authentication.k8s.io/v1beta1',
+    ],
+    target: 'authentication.k8s.io/v1',
+  },
+  VolumeAttributesClass: {
+    legacy: [
+      'storage.k8s.io/v1alpha1',
+      'storage.k8s.io/v1beta1',
+    ],
+    target: 'storage.k8s.io/v1',
+  },
+  ResourceClaim: {
+    legacy: ['resource.k8s.io/v1alpha3', 'resource.k8s.io/v1beta1'],
+    target: 'resource.k8s.io/v1',
+  },
+  ResourceClaimTemplate: {
+    legacy: ['resource.k8s.io/v1alpha3', 'resource.k8s.io/v1beta1'],
+    target: 'resource.k8s.io/v1',
+  },
+  DeviceClass: {
+    legacy: ['resource.k8s.io/v1alpha3', 'resource.k8s.io/v1beta1'],
+    target: 'resource.k8s.io/v1',
+  },
+  ResourceSlice: {
+    legacy: ['resource.k8s.io/v1alpha3', 'resource.k8s.io/v1beta1'],
+    target: 'resource.k8s.io/v1',
+  },
 };
 
 function parseDocs(docs, optionsOrReporter) {
@@ -583,8 +782,18 @@ function parseDocs(docs, optionsOrReporter) {
 
   return docs
     .filter((doc) => doc != null)
-    .map((doc) => replaceDeprecatedAPIs(doc, options))
-    .map((doc) => addSpecSelector(doc, options.reporter));
+    .map((doc) => {
+      const updated = replaceDeprecatedAPIs(doc, options);
+      // Only add spec.selector when the workload is in apps/v1 (migrated or already apps/v1).
+      // Do not mutate legacy workloads that were intentionally skipped by targetVersion gating.
+      const kind = normalizeKind(getVal(updated, 'kind'));
+      const apiVersion = getVal(updated, 'apiVersion');
+      const rule = MIGRATION_RULES[kind];
+      if (options.targetVersion && rule && rule.legacy.includes(apiVersion)) {
+        return updated;
+      }
+      return addSpecSelector(updated, options.reporter);
+    });
 }
 
 function replaceDeprecatedAPIs(resource, reporterOrOptions, targetVersionArg) {
@@ -717,4 +926,5 @@ module.exports = {
   parseVersion,
   parseVersionNum,
   MIGRATION_RULES,
+  LATEST_K8S_VERSION,
 };

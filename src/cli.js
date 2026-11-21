@@ -50,7 +50,7 @@ Advanced Options:
       --target-version <ver>    Gate migrations up to a specific Kubernetes version (e.g. 1.25)
       --audit, --scan           Pluto-style read-only audit: scan and print summary table
       --only-removed            Audit: only list APIs that are completely removed in target version
-      --format <format>         Output format: table (default), markdown, json, or annotations
+      --format <format>         Output format: table (default), markdown, json, sarif, or annotations
       --output-file <file>      Write audit report directly to a file
       --ingress-to-gateway      Translate Ingress manifests to Gateway API (HTTPRoute)
       --generate-gateway        Generate companion Gateway resource with --ingress-to-gateway
@@ -58,13 +58,15 @@ Advanced Options:
       --ignore <patterns>       Comma-separated glob ignore patterns (or use .janosignore)
       --annotations             Emit GitHub Actions workflow annotations (auto in CI)
 
-Cluster & Helm Options:
+Cluster, Helm & Kustomize Options:
       --cluster, --live         Audit running Kubernetes cluster directly via kubectl
+      --helm-releases           With --cluster, also decode Helm v3 release Secrets for original manifests
       --require-original        With --cluster --check, fail if any original manifest is unavailable
       --namespace <ns>          Namespace filter for live cluster audit (default: all namespaces)
       --kubeconfig <file>       Custom kubeconfig file path
       --chart, --helm <dir>     Scan or render Helm chart directory via 'helm template'
       --values <file>           Specify values YAML file for Helm chart rendering
+  -k, --kustomize <dir>         Render and audit/migrate a Kustomize directory via kustomize/kubectl
 
 Provenance & Git Options:
       --annotate, --stamp       Stamp upgraded manifests with janos.io/migrated-* metadata annotations
@@ -107,11 +109,12 @@ function parseArgs(inputArgv) {
     if (res.f) res.file = res.f === '-' ? '-' : path.resolve(BASE_DIR, res.f);
     if (res.d) res.dir = path.resolve(BASE_DIR, res.d);
     if (res.chart || res.helm) res.chart = path.resolve(BASE_DIR, res.chart || res.helm);
+    if (res.kustomize) res.kustomize = path.resolve(BASE_DIR, res.kustomize);
     if (res.file === '-') {
       res.stdin = true;
       res.file = undefined;
     }
-    if (!res.file && !res.dir && !res.stdin && !res.chart && !res.cluster && !res.live) {
+    if (!res.file && !res.dir && !res.stdin && !res.chart && !res.kustomize && !res.cluster && !res.live) {
       throw new Error('argument -d or -f must be provided');
     }
     return res;
@@ -126,11 +129,13 @@ function parseArgs(inputArgv) {
     stdin: { type: 'boolean', default: false },
     cluster: { type: 'boolean', default: false },
     live: { type: 'boolean', default: false },
+    'helm-releases': { type: 'boolean', default: false },
     'require-original': { type: 'boolean', default: false },
     namespace: { type: 'string' },
     kubeconfig: { type: 'string' },
     chart: { type: 'string' },
     helm: { type: 'string' },
+    kustomize: { type: 'string', short: 'k' },
     values: { type: 'string' },
     'dry-run': { type: 'boolean', short: 'n', default: false },
     diff: { type: 'boolean', default: false },
@@ -181,10 +186,12 @@ function parseArgs(inputArgv) {
     interactive: Boolean(values.interactive),
     stdin: isStdin,
     cluster: isCluster,
+    helmReleases: Boolean(values['helm-releases']),
     requireOriginal: Boolean(values['require-original']),
     namespace: values.namespace,
     kubeconfig: values.kubeconfig ? path.resolve(BASE_DIR, values.kubeconfig) : undefined,
     chart: chartTarget ? path.resolve(BASE_DIR, chartTarget) : undefined,
+    kustomize: values.kustomize ? path.resolve(BASE_DIR, values.kustomize) : undefined,
     values: values.values ? path.resolve(BASE_DIR, values.values) : undefined,
     dryRun: Boolean(values['dry-run']),
     diff: Boolean(values.diff),
@@ -198,7 +205,10 @@ function parseArgs(inputArgv) {
     generateGateway: Boolean(values['generate-gateway']),
     out: values.out ? path.resolve(BASE_DIR, values.out) : undefined,
     ignore: values.ignore,
-    annotations: Boolean(values.annotations || (process.env.GITHUB_ACTIONS === 'true' && values.format !== 'json')),
+    annotations: Boolean(
+      values.annotations ||
+      (process.env.GITHUB_ACTIONS === 'true' && !['json', 'sarif'].includes((values.format || '').toLowerCase())),
+    ),
     annotate: Boolean(values.annotate || values.stamp),
     stamp: Boolean(values.annotate || values.stamp),
     annotateInline: Boolean(values['annotate-inline']),

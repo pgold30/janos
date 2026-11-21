@@ -27,6 +27,140 @@ function toJS(doc) {
   return doc;
 }
 
+const UNSUPPORTED_NGINX_ANNOTATIONS = [
+  'nginx.ingress.kubernetes.io/configuration-snippet',
+  'nginx.ingress.kubernetes.io/server-snippet',
+  'nginx.ingress.kubernetes.io/auth-url',
+  'nginx.ingress.kubernetes.io/auth-type',
+  'nginx.ingress.kubernetes.io/canary',
+  'nginx.ingress.kubernetes.io/limit-rps',
+  'nginx.ingress.kubernetes.io/proxy-body-size',
+  'nginx.ingress.kubernetes.io/affinity',
+];
+
+function sanitizeNamePart(str) {
+  return String(str)
+    .toLowerCase()
+    .replace(/[^a-z0-9-]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, 40) || 'host';
+}
+
+function parseRedirectUrl(rawUrl) {
+  const redirect = { statusCode: 301 };
+  if (typeof rawUrl !== 'string' || !rawUrl.trim()) return redirect;
+  try {
+    const parsed = new URL(rawUrl.trim());
+    const scheme = parsed.protocol.replace(/:$/, '');
+    if (scheme === 'http' || scheme === 'https') {
+      redirect.scheme = scheme;
+    }
+    if (parsed.hostname) {
+      redirect.hostname = parsed.hostname;
+    }
+    if (parsed.port) {
+      redirect.port = parseInt(parsed.port, 10);
+    }
+    if (parsed.pathname && parsed.pathname !== '/') {
+      redirect.path = {
+        type: 'ReplaceFullPath',
+        replaceFullPath: parsed.pathname,
+      };
+    }
+  } catch {
+    if (rawUrl.startsWith('/')) {
+      redirect.path = {
+        type: 'ReplaceFullPath',
+        replaceFullPath: rawUrl,
+      };
+    }
+  }
+  return redirect;
+}
+
+function extractBackendRef(backend, reporter, ingressName) {
+  let serviceName = backend.serviceName;
+  let servicePort = backend.servicePort;
+
+  if (backend.service) {
+    serviceName = backend.service.name;
+    const portVal = backend.service.port;
+    if (portVal) {
+      servicePort = portVal.number || portVal.name || portVal;
+    }
+  }
+
+  if (!serviceName) return null;
+
+  let numericPort;
+  if (typeof servicePort === 'number') {
+    numericPort = servicePort;
+  } else if (typeof servicePort === 'string' && /^\d+$/.test(servicePort)) {
+    numericPort = parseInt(servicePort, 10);
+  } else {
+    if (servicePort && reporter) {
+      reporter({
+        type: 'warning',
+        message: `Ingress "${ingressName}" backend "${serviceName}" uses named port "${servicePort}"; Gateway API requires a numeric port (defaulted to 80 — verify before applying).`,
+      });
+    }
+    numericPort = 80;
+  }
+
+  return { name: serviceName, port: numericPort };
+}
+
+function buildFilters(annotations, reporter, ingressName) {
+  const filters = [];
+
+  const rewriteTarget =
+    annotations['nginx.ingress.kubernetes.io/rewrite-target'] ||
+    annotations['ingress.kubernetes.io/rewrite-target'];
+  if (rewriteTarget) {
+    if (/\$\d+/.test(rewriteTarget) && reporter) {
+      reporter({
+        type: 'warning',
+        message: `Ingress "${ingressName}" uses regex capture group in rewrite-target ("${rewriteTarget}"); Gateway API ReplacePrefixMatch does literal prefix replacement — review manually or use ingress2gateway.`,
+      });
+    }
+    filters.push({
+      type: 'URLRewrite',
+      urlRewrite: {
+        path: {
+          type: 'ReplacePrefixMatch',
+          replacePrefixMatch: rewriteTarget,
+        },
+      },
+    });
+  }
+
+  const sslRedirect =
+    annotations['nginx.ingress.kubernetes.io/ssl-redirect'] ||
+    annotations['ingress.kubernetes.io/ssl-redirect'];
+  if (sslRedirect === 'true' || sslRedirect === true) {
+    filters.push({
+      type: 'RequestRedirect',
+      requestRedirect: {
+        scheme: 'https',
+        statusCode: 301,
+        port: 443,
+      },
+    });
+  }
+
+  const permRedirect =
+    annotations['nginx.ingress.kubernetes.io/permanent-redirect'] ||
+    annotations['ingress.kubernetes.io/permanent-redirect'];
+  if (permRedirect) {
+    filters.push({
+      type: 'RequestRedirect',
+      requestRedirect: parseRedirectUrl(permRedirect),
+    });
+  }
+
+  return filters;
+}
+
 /**
  * Converts an Ingress manifest to Gateway API resources (HTTPRoute and optional Gateway).
  * Inspired by kubernetes-sigs/ingress2gateway.
@@ -35,7 +169,8 @@ function toJS(doc) {
  * @param {Object} [options]
  * @param {string} [options.gatewayName]
  * @param {string} [options.gatewayNamespace]
- * @param {boolean} [options.generateGateway=true]
+ * @param {boolean} [options.generateGateway=false]
+ * @param {Function} [options.reporter]
  * @returns {Array<Object>} Generated Gateway API resources
  */
 function convertIngressToGateway(ingressResource, options = {}) {
@@ -47,6 +182,19 @@ function convertIngressToGateway(ingressResource, options = {}) {
   const meta = ingress.metadata || {};
   const spec = ingress.spec || {};
   const annotations = meta.annotations || {};
+  const reporter = typeof options.reporter === 'function' ? options.reporter : null;
+  const ingressName = meta.name || 'ingress';
+
+  if (reporter) {
+    for (const unsupported of UNSUPPORTED_NGINX_ANNOTATIONS) {
+      if (annotations[unsupported] !== undefined) {
+        reporter({
+          type: 'warning',
+          message: `Ingress "${ingressName}" has provider-specific annotation "${unsupported}" which Janos cannot translate equivalently; consider ingress2gateway or manual policy migration.`,
+        });
+      }
+    }
+  }
 
   // Determine Gateway name / parentRef
   const ingressClass =
@@ -55,32 +203,23 @@ function convertIngressToGateway(ingressResource, options = {}) {
     annotations['kubernetes.io/ingress.class'] ||
     'default-gateway';
 
-  const hostnames = [];
-  const rules = [];
+  // Group rules by host so distinct hosts get isolated HTTPRoutes
+  const hostGroups = new Map();
+  const baseFilters = buildFilters(annotations, reporter, ingressName);
 
-  // 1. Process rules
   if (Array.isArray(spec.rules)) {
     for (const rule of spec.rules) {
-      if (rule.host && !hostnames.includes(rule.host)) {
-        hostnames.push(rule.host);
+      const hostKey = rule.host || '';
+      if (!hostGroups.has(hostKey)) {
+        hostGroups.set(hostKey, []);
       }
+      const groupRules = hostGroups.get(hostKey);
 
       if (rule.http && Array.isArray(rule.http.paths)) {
         for (const p of rule.http.paths) {
           const pathType = p.pathType === 'Exact' ? 'Exact' : 'PathPrefix';
           const pathValue = p.path || '/';
-
-          const backend = p.backend || {};
-          let serviceName = backend.serviceName;
-          let servicePort = backend.servicePort;
-
-          if (backend.service) {
-            serviceName = backend.service.name;
-            const portVal = backend.service.port;
-            if (portVal) {
-              servicePort = portVal.number || portVal.name || portVal;
-            }
-          }
+          const backendRef = extractBackendRef(p.backend || {}, reporter, ingressName);
 
           const ruleItem = {
             matches: [
@@ -91,67 +230,14 @@ function convertIngressToGateway(ingressResource, options = {}) {
                 },
               },
             ],
-            backendRefs: [],
+            backendRefs: backendRef ? [backendRef] : [],
           };
 
-          if (serviceName) {
-            ruleItem.backendRefs.push({
-              name: serviceName,
-              port: typeof servicePort === 'number' ? servicePort : parseInt(servicePort, 10) || 80,
-            });
+          if (baseFilters.length > 0) {
+            ruleItem.filters = baseFilters.map((f) => JSON.parse(JSON.stringify(f)));
           }
 
-          const filters = [];
-
-          // Check for rewrite-target annotation
-          const rewriteTarget =
-            annotations['nginx.ingress.kubernetes.io/rewrite-target'] ||
-            annotations['ingress.kubernetes.io/rewrite-target'];
-          if (rewriteTarget) {
-            filters.push({
-              type: 'URLRewrite',
-              urlRewrite: {
-                path: {
-                  type: 'ReplacePrefixMatch',
-                  replacePrefixMatch: rewriteTarget,
-                },
-              },
-            });
-          }
-
-          // Check for ssl-redirect annotation
-          const sslRedirect =
-            annotations['nginx.ingress.kubernetes.io/ssl-redirect'] ||
-            annotations['ingress.kubernetes.io/ssl-redirect'];
-          if (sslRedirect === 'true' || sslRedirect === true) {
-            filters.push({
-              type: 'RequestRedirect',
-              requestRedirect: {
-                scheme: 'https',
-                statusCode: 301,
-                port: 443,
-              },
-            });
-          }
-
-          // Check for permanent-redirect annotation
-          const permRedirect =
-            annotations['nginx.ingress.kubernetes.io/permanent-redirect'] ||
-            annotations['ingress.kubernetes.io/permanent-redirect'];
-          if (permRedirect) {
-            filters.push({
-              type: 'RequestRedirect',
-              requestRedirect: {
-                statusCode: 301,
-              },
-            });
-          }
-
-          if (filters.length > 0) {
-            ruleItem.filters = filters;
-          }
-
-          rules.push(ruleItem);
+          groupRules.push(ruleItem);
         }
       }
     }
@@ -159,16 +245,11 @@ function convertIngressToGateway(ingressResource, options = {}) {
 
   // 2. Default backend
   const defaultBackend = spec.defaultBackend || spec.backend;
+  let defaultRule = null;
   if (defaultBackend) {
-    let defName = defaultBackend.serviceName;
-    let defPort = defaultBackend.servicePort;
-    if (defaultBackend.service) {
-      defName = defaultBackend.service.name;
-      const p = defaultBackend.service.port;
-      defPort = p ? p.number || p.name || p : 80;
-    }
-    if (defName) {
-      rules.push({
+    const backendRef = extractBackendRef(defaultBackend, reporter, ingressName);
+    if (backendRef) {
+      defaultRule = {
         matches: [
           {
             path: {
@@ -177,13 +258,8 @@ function convertIngressToGateway(ingressResource, options = {}) {
             },
           },
         ],
-        backendRefs: [
-          {
-            name: defName,
-            port: typeof defPort === 'number' ? defPort : parseInt(defPort, 10) || 80,
-          },
-        ],
-      });
+        backendRefs: [backendRef],
+      };
     }
   }
 
@@ -192,11 +268,15 @@ function convertIngressToGateway(ingressResource, options = {}) {
     parentRef.namespace = options.gatewayNamespace;
   }
 
-  const httpRoute = {
+  const distinctHosts = Array.from(hostGroups.keys()).filter(Boolean);
+  const splitByHost = distinctHosts.length > 1;
+  const results = [];
+
+  const makeRoute = (routeName, hostnames, routeRules) => ({
     apiVersion: 'gateway.networking.k8s.io/v1',
     kind: 'HTTPRoute',
     metadata: {
-      name: meta.name ? `${meta.name}-route` : 'ingress-route',
+      name: routeName,
       ...(meta.namespace ? { namespace: meta.namespace } : {}),
       ...(meta.labels ? { labels: { ...meta.labels } } : {}),
       ...(options.annotate || options.stamp ? {
@@ -208,13 +288,38 @@ function convertIngressToGateway(ingressResource, options = {}) {
       } : {}),
     },
     spec: {
-      parentRefs: [parentRef],
+      parentRefs: [{ ...parentRef }],
       ...(hostnames.length > 0 ? { hostnames } : {}),
-      rules,
+      rules: routeRules,
     },
-  };
+  });
 
-  const results = [httpRoute];
+  if (splitByHost) {
+    for (const [hostKey, groupRules] of hostGroups.entries()) {
+      const routeName = hostKey
+        ? `${ingressName}-${sanitizeNamePart(hostKey)}-route`
+        : `${ingressName}-default-route`;
+      const routeRules = [...groupRules];
+      if (!hostKey && defaultRule) {
+        routeRules.push(defaultRule);
+        defaultRule = null;
+      }
+      results.push(makeRoute(routeName, hostKey ? [hostKey] : [], routeRules));
+    }
+    if (defaultRule) {
+      results.push(makeRoute(`${ingressName}-default-route`, [], [defaultRule]));
+    }
+  } else {
+    const allRules = [];
+    for (const groupRules of hostGroups.values()) {
+      allRules.push(...groupRules);
+    }
+    if (defaultRule) {
+      allRules.push(defaultRule);
+    }
+    const routeName = meta.name ? `${meta.name}-route` : 'ingress-route';
+    results.push(makeRoute(routeName, distinctHosts, allRules));
+  }
 
   // 3. Optional Gateway resource generation
   if (options.generateGateway) {
@@ -232,27 +337,40 @@ function convertIngressToGateway(ingressResource, options = {}) {
     ];
 
     if (Array.isArray(spec.tls) && spec.tls.length > 0) {
+      const usedListenerNames = new Set(['http']);
       spec.tls.forEach((tlsEntry, idx) => {
-        const listenerName = tlsEntry.secretName
+        const baseName = tlsEntry.secretName
           ? `https-${tlsEntry.secretName}`
           : `https-${idx + 1}`;
-        const listener = {
-          name: listenerName,
-          port: 443,
-          protocol: 'HTTPS',
-          tls: {
-            mode: 'Terminate',
-            certificateRefs: [
-              {
-                name: tlsEntry.secretName || 'default-cert',
-              },
-            ],
-          },
-        };
-        if (Array.isArray(tlsEntry.hosts) && tlsEntry.hosts.length > 0) {
-          listener.hostname = tlsEntry.hosts[0];
-        }
-        listeners.push(listener);
+        const tlsHosts = Array.isArray(tlsEntry.hosts) && tlsEntry.hosts.length > 0
+          ? tlsEntry.hosts
+          : [null];
+
+        tlsHosts.forEach((host, hIdx) => {
+          let listenerName = tlsHosts.length === 1 ? baseName : `${baseName}-${hIdx + 1}`;
+          while (usedListenerNames.has(listenerName)) {
+            listenerName += '-x';
+          }
+          usedListenerNames.add(listenerName);
+
+          const listener = {
+            name: listenerName,
+            port: 443,
+            protocol: 'HTTPS',
+            tls: {
+              mode: 'Terminate',
+              certificateRefs: [
+                {
+                  name: tlsEntry.secretName || 'default-cert',
+                },
+              ],
+            },
+          };
+          if (host) {
+            listener.hostname = host;
+          }
+          listeners.push(listener);
+        });
       });
     }
 
