@@ -16,7 +16,7 @@
 const fs = require('fs');
 const path = require('path');
 const yaml = require('./yaml');
-const { normalizeKind, getRemovalVersion, parseVersionNum, MIGRATION_RULES, LATEST_K8S_VERSION } = require('./migration');
+const { normalizeKind, resolveMigrationRule, parseVersionNum, LATEST_K8S_VERSION } = require('./migration');
 const { getVersion } = require('./cli');
 
 const helm = require('./helm');
@@ -101,9 +101,9 @@ function auditContent(content, sourceName = 'STDIN', options = {}) {
       const name = (doc.metadata && doc.metadata.name) || 'unnamed';
       const namespace = (doc.metadata && doc.metadata.namespace) || 'default';
 
-      const rule = MIGRATION_RULES[kind];
-      if (rule && rule.legacy.includes(apiVersion)) {
-        const removedIn = getRemovalVersion(kind, apiVersion);
+      const resolved = resolveMigrationRule(kind, apiVersion, options);
+      if (resolved) {
+        const { rule, removedIn } = resolved;
         const remVer = parseVersionNum(removedIn);
         const targetVer = options.targetVersion
           ? parseVersionNum(options.targetVersion)
@@ -373,9 +373,21 @@ function formatReport(report, format = 'table') {
   }
 }
 
+function shouldFailAudit(report, options = {}) {
+  if (!report || !Array.isArray(report.items) || report.items.length === 0) {
+    return false;
+  }
+  const failOn = options.failOn ? String(options.failOn).toLowerCase() : 'deprecated';
+  if (failOn === 'removed') {
+    return report.items.some((item) => item.status === 'REMOVED');
+  }
+  return report.items.length > 0;
+}
+
 module.exports = {
   auditFiles,
   auditContent,
+  shouldFailAudit,
   formatReport,
   formatAsciiTable,
   formatMarkdownTable,

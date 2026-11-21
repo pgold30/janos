@@ -50,6 +50,10 @@ Advanced Options:
       --target-version <ver>    Gate migrations up to a specific Kubernetes version (e.g. 1.25)
       --audit, --scan           Pluto-style read-only audit: scan and print summary table
       --only-removed            Audit: only list APIs that are completely removed in target version
+      --fail-on <level>         With --audit --check: fail on "deprecated" (default) or "removed" only
+      --include-ecosystem       Include built-in ecosystem CRD rules (cert-manager, Istio, Traefik, ESO, Kyverno)
+      --config <file>           Path to .janos.yaml config/custom rules file (auto-detected if present)
+      --validate                Validate migrated manifests via 'kubectl apply --dry-run=server'
       --format <format>         Output format: table (default), markdown, json, sarif, or annotations
       --output-file <file>      Write audit report directly to a file
       --ingress-to-gateway      Translate Ingress manifests to Gateway API (HTTPRoute)
@@ -60,6 +64,7 @@ Advanced Options:
 
 Cluster, Helm & Kustomize Options:
       --cluster, --live         Audit running Kubernetes cluster directly via kubectl
+      --cluster-scoped          With --cluster, also audit cluster-scoped kinds (CRDs, Webhooks, StorageClasses, etc.)
       --helm-releases           With --cluster, also decode Helm v3 release Secrets for original manifests
       --require-original        With --cluster --check, fail if any original manifest is unavailable
       --namespace <ns>          Namespace filter for live cluster audit (default: all namespaces)
@@ -129,6 +134,7 @@ function parseArgs(inputArgv) {
     stdin: { type: 'boolean', default: false },
     cluster: { type: 'boolean', default: false },
     live: { type: 'boolean', default: false },
+    'cluster-scoped': { type: 'boolean', default: false },
     'helm-releases': { type: 'boolean', default: false },
     'require-original': { type: 'boolean', default: false },
     namespace: { type: 'string' },
@@ -144,6 +150,10 @@ function parseArgs(inputArgv) {
     scan: { type: 'boolean', default: false },
     format: { type: 'string', default: 'table' },
     'only-removed': { type: 'boolean', default: false },
+    'fail-on': { type: 'string' },
+    'include-ecosystem': { type: 'boolean', default: false },
+    config: { type: 'string' },
+    validate: { type: 'boolean', default: false },
     'output-file': { type: 'string' },
     'target-version': { type: 'string' },
     'ingress-to-gateway': { type: 'boolean', default: false },
@@ -180,12 +190,17 @@ function parseArgs(inputArgv) {
     throw new Error('--target-version must be a Kubernetes version such as 1.25');
   }
 
+  if (values['fail-on'] && !['removed', 'deprecated'].includes(values['fail-on'].toLowerCase())) {
+    throw new Error('--fail-on must be "removed" or "deprecated"');
+  }
+
   const result = {
     file: (values.file && values.file !== '-') ? path.resolve(BASE_DIR, values.file) : undefined,
     dir: values.dir ? path.resolve(BASE_DIR, values.dir) : undefined,
     interactive: Boolean(values.interactive),
     stdin: isStdin,
     cluster: isCluster,
+    clusterScoped: Boolean(values['cluster-scoped']),
     helmReleases: Boolean(values['helm-releases']),
     requireOriginal: Boolean(values['require-original']),
     namespace: values.namespace,
@@ -199,6 +214,10 @@ function parseArgs(inputArgv) {
     audit: isAudit,
     format: values.format || 'table',
     onlyRemoved: Boolean(values['only-removed']),
+    failOn: values['fail-on'] ? values['fail-on'].toLowerCase() : undefined,
+    includeEcosystem: Boolean(values['include-ecosystem']),
+    config: values.config ? path.resolve(BASE_DIR, values.config) : undefined,
+    validate: Boolean(values.validate),
     outputFile: values['output-file'] ? path.resolve(BASE_DIR, values['output-file']) : undefined,
     targetVersion: values['target-version'],
     ingressToGateway: Boolean(values['ingress-to-gateway']),

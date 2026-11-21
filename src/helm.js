@@ -16,7 +16,7 @@
 const { execFileSync } = require('child_process');
 const fs = require('fs');
 const path = require('path');
-const { MIGRATION_RULES, normalizeKind, getRemovalVersion, parseVersionNum, LATEST_K8S_VERSION } = require('./migration');
+const { normalizeKind, resolveMigrationRule, parseVersionNum, LATEST_K8S_VERSION } = require('./migration');
 
 /**
  * Checks if a directory is a Helm chart (contains Chart.yaml or Chart.yml).
@@ -104,33 +104,31 @@ function auditHelmTemplate(content, filePath = 'template.yaml', options = {}) {
   let currentLine = null;
 
   function flushResource() {
-    if (currentKind && currentApi && MIGRATION_RULES[currentKind]) {
-      const rule = MIGRATION_RULES[currentKind];
-      if (rule.legacy.includes(currentApi)) {
-        const removedIn = getRemovalVersion(currentKind, currentApi);
-        const remVer = parseVersionNum(removedIn);
-        const targetVer = options.targetVersion
-          ? parseVersionNum(options.targetVersion)
-          : parseVersionNum(LATEST_K8S_VERSION);
-        const status = remVer <= targetVer ? 'REMOVED' : 'DEPRECATED';
+    const resolved = currentKind && currentApi ? resolveMigrationRule(currentKind, currentApi, options) : null;
+    if (resolved) {
+      const { rule, removedIn } = resolved;
+      const remVer = parseVersionNum(removedIn);
+      const targetVer = options.targetVersion
+        ? parseVersionNum(options.targetVersion)
+        : parseVersionNum(LATEST_K8S_VERSION);
+      const status = remVer <= targetVer ? 'REMOVED' : 'DEPRECATED';
 
-        const item = {
-          kind: currentKind,
-          name: currentName,
-          namespace: 'default',
-          currentApi,
-          targetApi: rule.target,
-          removedIn: `v${removedIn}`,
-          status,
-          file: filePath,
-          warning: rule.warning || null,
-          isHelmTemplate: true,
-        };
-        if (currentLine !== null) {
-          item.line = currentLine;
-        }
-        items.push(item);
+      const item = {
+        kind: currentKind,
+        name: currentName,
+        namespace: 'default',
+        currentApi,
+        targetApi: rule.target,
+        removedIn: `v${removedIn}`,
+        status,
+        file: filePath,
+        warning: rule.warning || null,
+        isHelmTemplate: true,
+      };
+      if (currentLine !== null) {
+        item.line = currentLine;
       }
+      items.push(item);
     }
     currentKind = null;
     currentName = 'unnamed';
@@ -203,30 +201,29 @@ function migrateHelmTemplate(content, options = {}) {
         }
       }
 
-      if (kind && MIGRATION_RULES[kind]) {
-        const rule = MIGRATION_RULES[kind];
-        if (rule.legacy.includes(apiVersion)) {
-          if (options.targetVersion &&
-              parseVersionNum(getRemovalVersion(kind, apiVersion)) > parseVersionNum(options.targetVersion)) {
-            continue;
-          }
-          if (needsStructure.has(kind)) {
-            events.push({
-              type: 'manual',
-              message: `${kind} in an unrendered Helm template needs structural review; render the chart and migrate the rendered manifest.`,
-            });
-            continue;
-          }
-          const inlineComment = options.annotateInline || options['annotate-inline']
-            ? ` # [janos]: migrated from ${apiVersion}`
-            : '';
-          lines[i] = `${indent}apiVersion: ${rule.target}${inlineComment}`;
-          changed = true;
-          events.push({
-            type: 'migrated',
-            message: `Replace apiVersion for "${kind}" in Helm template: ${apiVersion} -> ${rule.target}`,
-          });
+      const resolved = kind ? resolveMigrationRule(kind, apiVersion, options) : null;
+      if (resolved) {
+        const { rule, removedIn } = resolved;
+        if (options.targetVersion &&
+            parseVersionNum(removedIn) > parseVersionNum(options.targetVersion)) {
+          continue;
         }
+        if (needsStructure.has(kind)) {
+          events.push({
+            type: 'manual',
+            message: `${kind} in an unrendered Helm template needs structural review; render the chart and migrate the rendered manifest.`,
+          });
+          continue;
+        }
+        const inlineComment = options.annotateInline || options['annotate-inline']
+          ? ` # [janos]: migrated from ${apiVersion}`
+          : '';
+        lines[i] = `${indent}apiVersion: ${rule.target}${inlineComment}`;
+        changed = true;
+        events.push({
+          type: 'migrated',
+          message: `Replace apiVersion for "${kind}" in Helm template: ${apiVersion} -> ${rule.target}`,
+        });
       }
     }
   }

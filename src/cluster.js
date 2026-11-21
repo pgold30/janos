@@ -239,9 +239,104 @@ function fetchClusterManifests(options = {}) {
   }
 }
 
+const CLUSTER_SCOPED_RESOURCES = [
+  'customresourcedefinitions',
+  'validatingwebhookconfigurations',
+  'mutatingwebhookconfigurations',
+  'ingressclasses',
+  'priorityclasses',
+  'storageclasses',
+  'csidrivers',
+  'csinodes',
+  'runtimeclasses',
+  'clusterroles',
+  'clusterrolebindings',
+  'flowschemas',
+  'prioritylevelconfigurations',
+];
+
+/**
+ * Fetches cluster-scoped Kubernetes resources via kubectl.
+ * Queries each resource kind resiliently so RBAC restrictions or older API servers
+ * missing a kind do not abort the entire cluster audit.
+ *
+ * @param {Object} [options]
+ * @returns {{ yaml: string, skipped: Array<string> }}
+ */
+function fetchClusterScopedManifests(options = {}) {
+  if (!isKubectlInstalled()) {
+    throw new Error('"kubectl" CLI not found in PATH. Install kubectl to audit running clusters.');
+  }
+
+  const chunks = [];
+  const skipped = [];
+  const baseArgs = options.kubeconfig ? ['--kubeconfig', options.kubeconfig] : [];
+
+  for (const kind of CLUSTER_SCOPED_RESOURCES) {
+    try {
+      const out = execFileSync('kubectl', ['get', kind, '-o', 'yaml', ...baseArgs], {
+        encoding: 'utf8',
+        maxBuffer: 50 * 1024 * 1024,
+        stdio: ['ignore', 'pipe', 'pipe'],
+      });
+      if (out && out.trim()) {
+        chunks.push(out.trim());
+      }
+    } catch {
+      skipped.push(kind);
+    }
+  }
+
+  return {
+    yaml: chunks.join('\n---\n'),
+    skipped,
+  };
+}
+
+/**
+ * Validates a YAML manifest string against a Kubernetes API server using
+ * `kubectl apply --dry-run=server -f -` without persisting any changes.
+ *
+ * @param {string} manifestYaml
+ * @param {Object} [options]
+ * @returns {{ ok: boolean, output?: string, error?: string }}
+ */
+function validateManifestServerDryRun(manifestYaml, options = {}) {
+  if (!isKubectlInstalled()) {
+    return {
+      ok: false,
+      error: '"kubectl" CLI not found in PATH. Install kubectl to run --validate server dry-run.',
+    };
+  }
+
+  const args = ['apply', '--dry-run=server', '-f', '-'];
+  if (options.namespace) {
+    args.push('-n', options.namespace);
+  }
+  if (options.kubeconfig) {
+    args.push('--kubeconfig', options.kubeconfig);
+  }
+
+  try {
+    const out = execFileSync('kubectl', args, {
+      input: manifestYaml,
+      encoding: 'utf8',
+      maxBuffer: 50 * 1024 * 1024,
+      stdio: ['pipe', 'pipe', 'pipe'],
+    });
+    return { ok: true, output: out.trim() };
+  } catch (err) {
+    const errorMsg = err.stderr ? err.stderr.toString().trim() : err.message;
+    return { ok: false, error: errorMsg };
+  }
+}
+
 module.exports = {
+  CLUSTER_SCOPED_RESOURCES,
   isKubectlInstalled,
   fetchClusterManifests,
+  fetchClusterScopedManifests,
+  validateManifestServerDryRun,
   collectAuditSources,
   decodeHelmReleaseSecret,
   collectHelmReleaseSources,

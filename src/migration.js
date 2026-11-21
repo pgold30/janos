@@ -13,6 +13,8 @@
  * limitations under the License.
  */
 
+const { getExtraRules } = require('./config');
+
 function isYamlDoc(obj) {
   return Boolean(obj && typeof obj.get === 'function' && typeof obj.set === 'function');
 }
@@ -134,6 +136,10 @@ function normalizeKind(kind) {
     resourceclaimtemplate: 'ResourceClaimTemplate',
     deviceclass: 'DeviceClass',
     resourceslice: 'ResourceSlice',
+    gateway: 'Gateway',
+    gatewayclass: 'GatewayClass',
+    httproute: 'HTTPRoute',
+    grpcroute: 'GRPCRoute',
   };
   return map[lower] || kind;
 }
@@ -141,6 +147,11 @@ function normalizeKind(kind) {
 function getRemovalVersion(kind, apiVersion) {
   const norm = normalizeKind(kind);
   const v = typeof apiVersion === 'string' ? apiVersion.trim() : apiVersion;
+
+  if (['Gateway', 'GatewayClass', 'HTTPRoute', 'GRPCRoute'].includes(norm)) {
+    if (v === 'gateway.networking.k8s.io/v1alpha2') return '1.31';
+    if (v === 'gateway.networking.k8s.io/v1beta1') return '1.34';
+  }
 
   if (norm === 'HorizontalPodAutoscaler') {
     if (v === 'autoscaling/v2beta1') return '1.25';
@@ -766,7 +777,50 @@ const MIGRATION_RULES = {
     legacy: ['resource.k8s.io/v1alpha3', 'resource.k8s.io/v1beta1'],
     target: 'resource.k8s.io/v1',
   },
+  Gateway: {
+    legacy: ['gateway.networking.k8s.io/v1alpha2', 'gateway.networking.k8s.io/v1beta1'],
+    target: 'gateway.networking.k8s.io/v1',
+  },
+  GatewayClass: {
+    legacy: ['gateway.networking.k8s.io/v1alpha2', 'gateway.networking.k8s.io/v1beta1'],
+    target: 'gateway.networking.k8s.io/v1',
+  },
+  HTTPRoute: {
+    legacy: ['gateway.networking.k8s.io/v1alpha2', 'gateway.networking.k8s.io/v1beta1'],
+    target: 'gateway.networking.k8s.io/v1',
+  },
+  GRPCRoute: {
+    legacy: ['gateway.networking.k8s.io/v1alpha2'],
+    target: 'gateway.networking.k8s.io/v1',
+  },
 };
+
+function resolveMigrationRule(kind, apiVersion, options = {}) {
+  const norm = normalizeKind(kind);
+  const v = typeof apiVersion === 'string' ? apiVersion.trim() : apiVersion;
+  if (!norm || !v) return null;
+
+  const coreRule = MIGRATION_RULES[norm];
+  if (coreRule && coreRule.legacy.includes(v)) {
+    return {
+      rule: coreRule,
+      removedIn: getRemovalVersion(norm, v),
+    };
+  }
+
+  const extras = getExtraRules(options);
+  const lowerKind = String(kind).toLowerCase();
+  for (const extra of extras) {
+    if (String(extra.kind).toLowerCase() === lowerKind && extra.legacy.includes(v)) {
+      return {
+        rule: extra,
+        removedIn: extra.removedIn || LATEST_K8S_VERSION,
+      };
+    }
+  }
+
+  return null;
+}
 
 function parseDocs(docs, optionsOrReporter) {
   if (!Array.isArray(docs)) {
@@ -819,9 +873,9 @@ function replaceDeprecatedAPIs(resource, reporterOrOptions, targetVersionArg) {
   const apiVersion = typeof rawApiVersion === 'string' ? rawApiVersion.trim() : rawApiVersion;
   const name = getVal(resource, ['metadata', 'name']) || 'unnamed';
 
-  const rule = MIGRATION_RULES[kind];
-  if (rule && rule.legacy.includes(apiVersion)) {
-    const removalVer = getRemovalVersion(kind, apiVersion);
+  const resolved = resolveMigrationRule(kind, apiVersion, typeof reporterOrOptions === 'object' ? reporterOrOptions : {});
+  if (resolved) {
+    const { rule, removedIn: removalVer } = resolved;
 
     if (targetVersion) {
       const maxVer = parseVersionNum(targetVersion);
@@ -923,6 +977,7 @@ module.exports = {
   addSpecSelector,
   normalizeKind,
   getRemovalVersion,
+  resolveMigrationRule,
   parseVersion,
   parseVersionNum,
   MIGRATION_RULES,

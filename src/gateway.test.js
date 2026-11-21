@@ -269,4 +269,32 @@ describe('Ingress to Gateway API converter', () => {
     assert.ok(warnings.some((w) => /capture group/i.test(w.message)));
     assert.ok(warnings.some((w) => /configuration-snippet/i.test(w.message)));
   });
+
+  it('translates use-regex and proxy-read-timeout annotations to RegularExpression and timeouts', () => {
+    const ingress = {
+      apiVersion: 'networking.k8s.io/v1',
+      kind: 'Ingress',
+      metadata: {
+        name: 'timed-regex',
+        annotations: {
+          'nginx.ingress.kubernetes.io/use-regex': 'true',
+          'nginx.ingress.kubernetes.io/proxy-read-timeout': '120',
+        },
+      },
+      spec: {
+        rules: [
+          {
+            http: {
+              paths: [
+                { path: '/api/v[0-9]+/.*', backend: { service: { name: 'api', port: { number: 8080 } } } },
+              ],
+            },
+          },
+        ],
+      },
+    };
+    const [route] = convertIngressToGateway(ingress);
+    assert.equal(route.spec.rules[0].matches[0].path.type, 'RegularExpression');
+    assert.deepEqual(route.spec.rules[0].timeouts, { backendRequest: '120s' });
+  });
 });

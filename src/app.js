@@ -23,6 +23,7 @@ const audit = require('./audit');
 const helm = require('./helm');
 const kustomize = require('./kustomize');
 const cluster = require('./cluster');
+const config = require('./config');
 const { convertIngressToGateway } = require('./gateway');
 
 function globToRegExp(pattern) {
@@ -291,6 +292,8 @@ function convertFile(filePath, options = {}) {
       targetVersion: options.targetVersion,
       annotate: options.annotate || options.stamp,
       annotateInline: options.annotateInline || options['annotate-inline'],
+      includeEcosystem: options.includeEcosystem,
+      customRules: options.customRules,
     });
     const changed = hasMigrationChanges(events);
     const newContent = changed ? yaml.dumpDocuments(migratedDocs) : originalContent;
@@ -305,6 +308,21 @@ function convertFile(filePath, options = {}) {
 
       if (!options.dryRun && !options.check && !options.interactive) {
         fs.writeFileSync(filePath, newContent, 'utf8');
+      }
+
+      if (options.validate) {
+        const validation = cluster.validateManifestServerDryRun(newContent, options);
+        if (!validation.ok) {
+          return {
+            filePath,
+            changed,
+            events,
+            newContent,
+            originalContent,
+            error: new Error(`Server dry-run validation failed: ${validation.error}`),
+          };
+        }
+        events.push({ type: 'validated', message: 'Server dry-run validation passed (kubectl apply --dry-run=server)' });
       }
     }
 
@@ -363,7 +381,7 @@ function handleStdin(args) {
       } catch {}
     }
 
-    if (args.check && report.deprecatedCount > 0) {
+    if (args.check && audit.shouldFailAudit(report, args)) {
       process.exitCode = 1;
     }
     return;
@@ -426,6 +444,8 @@ function handleStdin(args) {
       targetVersion: args.targetVersion,
       annotate: args.annotate || args.stamp,
       annotateInline: args.annotateInline || args['annotate-inline'],
+      includeEcosystem: args.includeEcosystem,
+      customRules: args.customRules,
     });
     const changed = hasMigrationChanges(events);
     const needsWork = changed || needsManualMigration(events);
@@ -515,7 +535,7 @@ function handleHelmChart(args) {
       } catch {}
     }
 
-    if (args.check && report.deprecatedCount > 0) {
+    if (args.check && audit.shouldFailAudit(report, args)) {
       process.exitCode = 1;
     }
     return;
@@ -529,6 +549,8 @@ function handleHelmChart(args) {
     targetVersion: args.targetVersion,
     annotate: args.annotate || args.stamp,
     annotateInline: args.annotateInline || args['annotate-inline'],
+    includeEcosystem: args.includeEcosystem,
+    customRules: args.customRules,
   });
   const changed = hasMigrationChanges(events);
   const needsWork = changed || needsManualMigration(events);
@@ -610,7 +632,7 @@ function handleKustomize(args) {
       } catch {}
     }
 
-    if (args.check && report.deprecatedCount > 0) {
+    if (args.check && audit.shouldFailAudit(report, args)) {
       process.exitCode = 1;
     }
     return;
@@ -624,6 +646,8 @@ function handleKustomize(args) {
     targetVersion: args.targetVersion,
     annotate: args.annotate || args.stamp,
     annotateInline: args.annotateInline || args['annotate-inline'],
+    includeEcosystem: args.includeEcosystem,
+    customRules: args.customRules,
   });
   const changed = hasMigrationChanges(events);
   const needsWork = changed || needsManualMigration(events);
@@ -684,6 +708,27 @@ function handleCluster(args) {
       return;
     }
 
+    if (args.clusterScoped && !args.namespace) {
+      try {
+        const scoped = cluster.fetchClusterScopedManifests(args);
+        if (scoped.yaml) {
+          const scopedSources = cluster.collectAuditSources(scoped.yaml);
+          sources.records.push(...scopedSources.records);
+          sources.coverage.resources += scopedSources.coverage.resources;
+          sources.coverage.original += scopedSources.coverage.original;
+          sources.coverage.liveOnly += scopedSources.coverage.liveOnly;
+          sources.coverage.invalidOriginal += scopedSources.coverage.invalidOriginal;
+        }
+        if (scoped.skipped.length > 0 && !args.quiet && !['json', 'sarif'].includes((args.format || '').toLowerCase())) {
+          console.error(`\x1b[90mNote:\x1b[0m Skipped unavailable/unauthorized cluster-scoped kinds: ${scoped.skipped.join(', ')}`);
+        }
+      } catch (err) {
+        if (!args.quiet) {
+          console.error(`\x1b[33mWarning:\x1b[0m Could not read cluster-scoped resources: ${err.message}`);
+        }
+      }
+    }
+
     if (args.helmReleases) {
       try {
         const secretsYaml = cluster.fetchHelmReleaseSecrets(args);
@@ -727,7 +772,7 @@ function handleCluster(args) {
       } catch {}
     }
 
-    if (args.check && (report.deprecatedCount > 0 ||
+    if (args.check && (audit.shouldFailAudit(report, args) ||
         (args.requireOriginal && sources.coverage.original !== sources.coverage.resources))) {
       process.exitCode = 1;
     }
@@ -747,6 +792,8 @@ function handleCluster(args) {
     targetVersion: args.targetVersion,
     annotate: args.annotate || args.stamp,
     annotateInline: args.annotateInline || args['annotate-inline'],
+    includeEcosystem: args.includeEcosystem,
+    customRules: args.customRules,
   });
   const changed = hasMigrationChanges(events);
   const needsWork = changed || needsManualMigration(events);
@@ -823,6 +870,31 @@ function main(argv, overrides = {}) {
 
   if (args.version) {
     console.log(`janos v${cli.getVersion()}`);
+    return;
+  }
+
+  // Load .janos.yaml / .janos.yml if present or explicitly specified via --config
+  try {
+    const startDir = args.dir || (args.file ? path.dirname(args.file) : process.cwd());
+    const loadedConfig = config.loadConfig(startDir, args.config);
+    if (loadedConfig.includeEcosystem && !args.includeEcosystem) {
+      args.includeEcosystem = true;
+    }
+    if (loadedConfig.targetVersion && !args.targetVersion) {
+      args.targetVersion = loadedConfig.targetVersion;
+    }
+    if (loadedConfig.failOn && !args.failOn) {
+      args.failOn = loadedConfig.failOn;
+    }
+    if (loadedConfig.ignore) {
+      args.ignore = args.ignore ? `${loadedConfig.ignore},${args.ignore}` : loadedConfig.ignore;
+    }
+    if (loadedConfig.rules && loadedConfig.rules.length > 0) {
+      args.customRules = [...(args.customRules || []), ...loadedConfig.rules];
+    }
+  } catch (e) {
+    console.error(`\x1b[31mError loading config:\x1b[0m ${e.message}`);
+    process.exitCode = 1;
     return;
   }
 
@@ -916,7 +988,7 @@ function main(argv, overrides = {}) {
       } catch {}
     }
 
-    if (args.check && report.deprecatedCount > 0) {
+    if (args.check && audit.shouldFailAudit(report, args)) {
       process.exitCode = 1;
     }
     return;

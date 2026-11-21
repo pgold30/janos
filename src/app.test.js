@@ -229,4 +229,26 @@ spec:
       fs.rmSync(parentDir, { recursive: true, force: true });
     }
   });
+
+  it('runs server dry-run validation when validate option is enabled', () => {
+    const cluster = require('./cluster');
+    const origValidate = cluster.validateManifestServerDryRun;
+    const tmpFile = path.join(os.tmpdir(), `janos-validate-${Date.now()}.yaml`);
+    fs.writeFileSync(tmpFile, 'apiVersion: batch/v1beta1\nkind: CronJob\nmetadata:\n  name: nightly\n');
+
+    try {
+      cluster.validateManifestServerDryRun = () => ({ ok: true, output: 'cronjob.batch/nightly configured (server dry run)' });
+      const okRes = convertFile(tmpFile, { dryRun: true, validate: true });
+      assert.equal(okRes.error, null);
+      assert.ok(okRes.events.some((e) => e.type === 'validated'));
+
+      cluster.validateManifestServerDryRun = () => ({ ok: false, error: 'field is immutable' });
+      const failRes = convertFile(tmpFile, { dryRun: true, validate: true });
+      assert.ok(failRes.error);
+      assert.match(failRes.error.message, /Server dry-run validation failed/);
+    } finally {
+      cluster.validateManifestServerDryRun = origValidate;
+      fs.rmSync(tmpFile, { force: true });
+    }
+  });
 });

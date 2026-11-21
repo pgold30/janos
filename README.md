@@ -31,15 +31,24 @@
 
 ## Where Janos fits
 
-| Task | Useful tool |
-| :--- | :--- |
-| Audit, preview, and edit source manifests in one local workflow | **Janos**: recursive edits, target version gating, CI checks, and manual-migration diagnostics |
-| Find deprecated APIs in files and stored Helm releases | [Pluto](https://pluto.docs.fairwinds.com/) |
-| Inspect original manifests stored by Helm or `kubectl apply` in a cluster | [Kube No Trouble](https://github.com/doitintl/kube-no-trouble) |
-| Translate controller-specific Ingress behavior into Gateway API resources | [ingress2gateway](https://github.com/kubernetes-sigs/ingress2gateway) |
-| Convert one Kubernetes object using the official conversion plugin | [kubectl convert](https://kubernetes.io/docs/reference/using-api/deprecation-guide/) |
+> *Pluto and Kube No Trouble tell you what will break. `kubectl-convert` strips your comments and converts one object at a time. **Janos** audits, previews diffs, safely migrates your GitOps source files in-place while preserving comments, blocks ambiguous upgrades instead of guessing, and enforces the result in CI.*
 
-Janos is most useful when a team owns GitOps manifests and wants a reviewable sequence: **audit → dry-run diff → migrate → CI check**. For cluster history or provider-specific Gateway behavior, use the specialist tools above alongside Janos.
+| Capability | **Janos v3** | [Pluto](https://pluto.docs.fairwinds.com/) | [kubent](https://github.com/doitintl/kube-no-trouble) | [kubectl-convert](https://kubernetes.io/docs/reference/using-api/deprecation-guide/) | [ingress2gateway](https://github.com/kubernetes-sigs/ingress2gateway) |
+| :--- | :---: | :---: | :---: | :---: | :---: |
+| **In-place manifest migration** (not just detection) | ✅ | ❌ | ❌ | ⚠️ Single-object stdout | ❌ Gateway only |
+| **Preserves YAML comments on unchanged nodes** | ✅ | N/A | N/A | ❌ Strips comments | ❌ |
+| **Blocks unsafe semantic changes** (empty PDB `{}`, CRD without schema, unknown webhook `sideEffects`) | ✅ | ❌ | ❌ | ❌ | N/A |
+| **Target-version gating & `--fail-on removed\|deprecated`** | ✅ | ✅ (audit only) | ✅ (audit only) | ❌ | ❌ |
+| **Unrendered Helm template migration** (keeps `{{ ... }}` intact) | ✅ | ❌ | ❌ | ❌ | ❌ |
+| **Kustomize & Helm chart rendering** (`--kustomize`, `--chart`) | ✅ | ⚠️ Via pipe | ❌ | ❌ | ❌ |
+| **Live cluster + cluster-scoped + Helm v3 release auditing** | ✅ | ✅ | ✅ | ❌ | ✅ (Ingress only) |
+| **Ecosystem CRDs & custom `.janos.yaml` rules** | ✅ | ✅ (audit only) | ❌ | ❌ | ❌ |
+| **Server dry-run validation** (`--validate`) | ✅ | ❌ | ❌ | ❌ | ❌ |
+| **Interactive per-file diff/approval** (`-i`: `y/n/d/a/q`) | ✅ | ❌ | ❌ | ❌ | ❌ |
+| **GitOps provenance & blame hygiene** (`--annotate`, `--git-blame-ignore`) | ✅ | ❌ | ❌ | ❌ | ❌ |
+| **SARIF 2.1.0 + GitHub Actions line-level annotations** | ✅ | ❌ | ❌ | ❌ | ❌ |
+
+Janos is built for teams that own GitOps manifests and want one reviewable workflow: **audit → dry-run diff → migrate → validate → CI check**. For deep live-cluster Helm history or controller-specific Gateway provider policies, pair Janos with Pluto/kubent and `ingress2gateway`.
 
 See the [before/after gallery](examples/README.md) for reproducible conversions, manual cases, and a target-cluster server dry-run command.
 
@@ -50,11 +59,11 @@ See the [before/after gallery](examples/README.md) for reproducible conversions,
 Install Janos from npm, then run the commands below in the directory containing your manifests:
 
 ```sh
-npm install --global @pgold30/janos@2.4.0
+npm install --global @pgold30/janos@3.0.0
 janos --version
 ```
 
-For a one-off run without a global install, use `npm exec --yes --package=@pgold30/janos@2.4.0 -- janos --audit -d ./k8s`. You can also install directly from this repository with `npm install --global github:pgold30/janos`.
+For a one-off run without a global install, use `npm exec --yes --package=@pgold30/janos@3.0.0 -- janos --audit -d ./k8s`. You can also install directly from this repository with `npm install --global github:pgold30/janos`.
 
 ### 1. Audit for Deprecated APIs (Read-Only)
 Find out what will break in your repository or running cluster without changing a single file:
@@ -65,17 +74,26 @@ janos --audit -d ./k8s
 # Audit an active Kubernetes cluster directly via kubectl:
 janos --cluster --audit
 
+# Include cluster-scoped kinds (CRDs, Webhooks, StorageClasses, ClusterRoles, FlowSchemas):
+janos --cluster --cluster-scoped --audit
+
 # Also decode Helm v3 release Secrets for original deployed manifests:
-janos --cluster --helm-releases --audit
+janos --cluster --cluster-scoped --helm-releases --audit
 
 # Focus only on APIs completely removed in your target version:
 janos --audit -d ./k8s --target-version 1.25 --only-removed
+
+# Show all findings, but fail CI only if REMOVED APIs exist:
+janos --audit -d ./k8s --target-version 1.25 --check --fail-on removed
+
+# Include built-in ecosystem CRD rules (cert-manager, Istio, Traefik, External Secrets, Kyverno):
+janos --audit -d ./k8s --include-ecosystem
 
 # Export SARIF 2.1.0 for GitHub Code Scanning:
 janos --audit -d ./k8s --format sarif --output-file janos.sarif
 ```
 
-Cluster mode queries workload, networking, RBAC, and coordination kinds through `kubectl`. For each returned resource it prefers a matching `kubectl.kubernetes.io/last-applied-configuration` manifest, then falls back to the served API if that annotation is missing or invalid. Add `--helm-releases` to also decode deployed Helm v3 release Secrets (`sh.helm.release.v1.*`) for original rendered manifests. Reports show the coverage counts; a served API cannot establish which version was originally applied. Use `--cluster --audit --check --require-original` to fail when any original manifest is unavailable.
+Cluster mode queries workload, networking, RBAC, and coordination kinds through `kubectl`. Add `--cluster-scoped` to also audit cluster-scoped resources (CRDs, Webhooks, IngressClasses, PriorityClasses, StorageClasses, ClusterRoles/Bindings, FlowSchemas, PriorityLevelConfigurations), skipping any kind that is unavailable or restricted by RBAC without aborting the scan. For each returned resource it prefers a matching `kubectl.kubernetes.io/last-applied-configuration` manifest, then falls back to the served API if that annotation is missing or invalid. Add `--helm-releases` to also decode deployed Helm v3 release Secrets (`sh.helm.release.v1.*`) for original rendered manifests. Reports show the coverage counts; a served API cannot establish which version was originally applied. Use `--cluster --audit --check --require-original` to fail when any original manifest is unavailable.
 
 Example audit report output with severity tags:
 
@@ -98,6 +116,9 @@ janos -d ./k8s
 
 # Option B: Interactive mode — review & confirm each file (y/n/d/a/q):
 janos -d ./k8s -i
+
+# Option C: Migrate and validate against a test cluster via server dry-run:
+janos -d ./k8s --validate
 ```
 
 *In interactive mode (`-i`), Janos prompts for each changed file (`[y]es, [n]o, [d]iff, [a]ll, [q]uit`). Resources requiring manual migration are reported and left unchanged; `--check` exits nonzero for them.*
@@ -156,6 +177,29 @@ apiVersion: batch/v1 # [janos]: migrated from batch/v1beta1
 kind: CronJob
 ```
 
+### 7. Custom Rules & Ecosystem CRDs (`.janos.yaml` & `--include-ecosystem`)
+Place a `.janos.yaml` (or `.janos.yml`) in your repository root (or pass `--config <file>`) to configure defaults and add custom CRD migration rules:
+
+```yaml
+includeEcosystem: true
+targetVersion: "1.34"
+failOn: removed
+rules:
+  - kind: Widget
+    legacy:
+      - acme.io/v1alpha1
+      - acme.io/v1beta1
+    target: acme.io/v1
+    removedIn: "1.34"
+```
+
+With `--include-ecosystem` (or `includeEcosystem: true`), Janos also detects and upgrades common ecosystem CRDs without colliding with core Kubernetes kinds:
+- **cert-manager**: `Certificate`, `Issuer`, `ClusterIssuer`, `CertificateRequest`, `Order`, `Challenge` (`v1alpha2`/`v1alpha3`/`v1beta1` → `v1`)
+- **External Secrets Operator**: `ExternalSecret`, `SecretStore`, `ClusterSecretStore` (`v1alpha1`/`v1beta1` → `v1`)
+- **Traefik**: `IngressRoute`, `IngressRouteTCP`, `IngressRouteUDP`, `Middleware`, `TLSOption`, `ServersTransport` (`traefik.containo.us/v1alpha1` → `traefik.io/v1alpha1`)
+- **Istio**: `VirtualService`, `DestinationRule`, `Gateway`, `ServiceEntry`, `Sidecar`, `AuthorizationPolicy`, `PeerAuthentication`, `RequestAuthentication` (`v1alpha3`/`v1beta1` → `v1`)
+- **Kyverno**: `ClusterPolicy`, `Policy` (`kyverno.io/v1alpha2` → `kyverno.io/v1`)
+
 ---
 
 ## 🔧 Advanced Usage & Integrations
@@ -208,7 +252,7 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Audit Kubernetes Manifests
-        uses: pgold30/janos@v2.4.0
+        uses: pgold30/janos@v3.0.0
         with:
           path: './k8s'
           args: '--audit --format markdown'
@@ -222,7 +266,7 @@ Block deprecated manifests from ever being committed to git. Add to `.pre-commit
 ```yaml
 repos:
   - repo: https://github.com/pgold30/janos
-    rev: v2.4.0
+    rev: v3.0.0
     hooks:
       - id: janos-audit     # Read-only verification before commit
       # - id: janos-migrate # Or auto-migrate in-place before commit
@@ -249,10 +293,10 @@ janos --audit -d ./k8s --format markdown --output-file audit-report.md
 For CI runners without Node.js:
 ```sh
 # Audit manifests from container (mount local directory):
-docker run --rm -v $(pwd)/k8s:/var/janos ghcr.io/pgold30/janos:2.4.0 --audit -d /var/janos
+docker run --rm -v $(pwd)/k8s:/var/janos ghcr.io/pgold30/janos:3.0.0 --audit -d /var/janos
 
 # Audit running cluster from container (mount kubeconfig):
-docker run --rm -v ~/.kube:/home/node/.kube:ro ghcr.io/pgold30/janos:2.4.0 --cluster --audit
+docker run --rm -v ~/.kube:/home/node/.kube:ro ghcr.io/pgold30/janos:3.0.0 --cluster --audit
 ```
 
 ---
@@ -277,11 +321,16 @@ Audit & Filter Options:
       --audit, --scan           Pluto-style read-only audit: scan and print summary table
       --target-version <ver>    Gate migrations up to a specific Kubernetes version (e.g. 1.25)
       --only-removed            Audit: only list APIs that are completely removed in target version
+      --fail-on <level>         With --audit --check: fail on "deprecated" (default) or "removed" only
+      --include-ecosystem       Include built-in ecosystem CRD rules (cert-manager, Istio, Traefik, ESO, Kyverno)
+      --config <file>           Path to .janos.yaml config/custom rules file (auto-detected if present)
+      --validate                Validate migrated manifests via 'kubectl apply --dry-run=server'
       --format <format>         Output format: table (default), markdown, json, sarif, or annotations
       --output-file <file>      Write audit report directly to a file
 
 Cluster, Helm & Kustomize Options:
       --cluster, --live         Audit running Kubernetes cluster directly via kubectl
+      --cluster-scoped          With --cluster, also audit cluster-scoped kinds (CRDs, Webhooks, StorageClasses, etc.)
       --helm-releases           With --cluster, also decode Helm v3 release Secrets for original manifests
       --require-original        With --cluster --check, fail if any original manifest is unavailable
       --namespace <ns>          Namespace filter for live cluster audit (default: all namespaces)
@@ -344,6 +393,7 @@ General & CI:
 | **SelfSubjectReview** | `authentication.k8s.io/v1alpha1`, `v1beta1` | `authentication.k8s.io/v1` | 1.28 / 1.32 | Authentication v1 migration |
 | **ValidatingAdmissionPolicy / Binding** | `admissionregistration.k8s.io/v1alpha1`, `v1beta1` | `admissionregistration.k8s.io/v1` | 1.30 / 1.34 | Admission policy v1 migration |
 | **VolumeAttributesClass** | `storage.k8s.io/v1alpha1`, `v1beta1` | `storage.k8s.io/v1` | 1.34 / 1.36 | Storage v1 migration |
+| **Gateway / GatewayClass / HTTPRoute / GRPCRoute** | `gateway.networking.k8s.io/v1alpha2`, `v1beta1` | `gateway.networking.k8s.io/v1` | 1.31 / 1.34 | Gateway API v1 migration |
 | **ResourceClaim / DeviceClass / ResourceSlice** | `resource.k8s.io/v1alpha3`, `v1beta1` | `resource.k8s.io/v1` | 1.34 / 1.36 | Dynamic Resource Allocation (DRA) v1 migration |
 | **PodSecurityPolicy** | `extensions/v1beta1`, `policy/v1beta1` | Manual migration | 1.25 | Left unchanged; `--check` fails and points to Pod Security Admission |
 

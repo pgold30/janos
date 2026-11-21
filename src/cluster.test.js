@@ -290,4 +290,48 @@ metadata:
     assert.equal(collected.records[0].resource.apiVersion, 'batch/v1beta1');
     assert.match(collected.records[0].source, /helm:prod\/payments@v2/);
   });
+
+  it('audits cluster-scoped resources when clusterScoped is enabled in handleCluster', () => {
+    const origFetch = cluster.fetchClusterManifests;
+    const origScoped = cluster.fetchClusterScopedManifests;
+    const origInstalled = cluster.isKubectlInstalled;
+    const origLog = console.log;
+
+    cluster.isKubectlInstalled = () => true;
+    cluster.fetchClusterManifests = () => JSON.stringify({ kind: 'List', items: [] });
+    cluster.fetchClusterScopedManifests = () => ({
+      yaml: JSON.stringify({
+        kind: 'List',
+        items: [
+          {
+            apiVersion: 'apiextensions.k8s.io/v1beta1',
+            kind: 'CustomResourceDefinition',
+            metadata: { name: 'widgets.example.com' },
+          },
+        ],
+      }),
+      skipped: ['flowschemas'],
+    });
+
+    let out = '';
+    console.log = (msg) => { out += msg; };
+    try {
+      app.handleCluster({
+        cluster: true,
+        clusterScoped: true,
+        audit: true,
+        format: 'json',
+        quiet: true,
+      });
+      const report = JSON.parse(out);
+      assert.equal(report.deprecatedCount, 1);
+      assert.equal(report.items[0].kind, 'CustomResourceDefinition');
+      assert.equal(report.coverage.resources, 1);
+    } finally {
+      console.log = origLog;
+      cluster.fetchClusterManifests = origFetch;
+      cluster.fetchClusterScopedManifests = origScoped;
+      cluster.isKubectlInstalled = origInstalled;
+    }
+  });
 });

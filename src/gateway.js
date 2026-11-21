@@ -206,6 +206,14 @@ function convertIngressToGateway(ingressResource, options = {}) {
   // Group rules by host so distinct hosts get isolated HTTPRoutes
   const hostGroups = new Map();
   const baseFilters = buildFilters(annotations, reporter, ingressName);
+  const useRegex =
+    annotations['nginx.ingress.kubernetes.io/use-regex'] === 'true' ||
+    annotations['nginx.ingress.kubernetes.io/use-regex'] === true;
+  const proxyReadTimeout = annotations['nginx.ingress.kubernetes.io/proxy-read-timeout'];
+  const backendTimeout =
+    proxyReadTimeout && /^\d+$/.test(String(proxyReadTimeout).trim())
+      ? `${String(proxyReadTimeout).trim()}s`
+      : null;
 
   if (Array.isArray(spec.rules)) {
     for (const rule of spec.rules) {
@@ -217,7 +225,11 @@ function convertIngressToGateway(ingressResource, options = {}) {
 
       if (rule.http && Array.isArray(rule.http.paths)) {
         for (const p of rule.http.paths) {
-          const pathType = p.pathType === 'Exact' ? 'Exact' : 'PathPrefix';
+          const pathType = useRegex
+            ? 'RegularExpression'
+            : p.pathType === 'Exact'
+              ? 'Exact'
+              : 'PathPrefix';
           const pathValue = p.path || '/';
           const backendRef = extractBackendRef(p.backend || {}, reporter, ingressName);
 
@@ -235,6 +247,10 @@ function convertIngressToGateway(ingressResource, options = {}) {
 
           if (baseFilters.length > 0) {
             ruleItem.filters = baseFilters.map((f) => JSON.parse(JSON.stringify(f)));
+          }
+
+          if (backendTimeout) {
+            ruleItem.timeouts = { backendRequest: backendTimeout };
           }
 
           groupRules.push(ruleItem);
